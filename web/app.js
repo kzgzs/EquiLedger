@@ -361,7 +361,10 @@ const RENDER = {
     await searchLegal(true);
   },
   async audit() {
+    const lic = await api('/api/license-status');
+    const licCn = { valid: '授权有效', grace: '离线宽限', unconfigured: '未配置授权', expired: '已过期', invalid: '无效', tampered: '篡改暂停', suspended: '平台暂停', offline_expired: '离线超宽限' }[lic.status] || lic.status;
     $('tabBody').innerHTML = `<h2>审计与验真</h2>
+    <div class="panel m-card"><span>商业授权 ${tag(licCn, { 授权有效: 'ok', 离线宽限: 'warn', 未配置授权: 'dim' })} ${lic.enforce ? '<span class="tag warn">强制开</span>' : '<span class="tag dim">强制关</span>'}</span><span class="hint">${esc(lic.message)}${lic.expiresAt ? ' · 到期 ' + esc(String(lic.expiresAt).slice(0, 10)) : ''}</span></div>
     <button onclick="doVerify()">一键验真（哈希链 + 签名 + 全量复算比对）</button>
     <button class="blue" onclick="exportPkg()">导出司法证据包</button>
     ${ME.role === 'Operator' || ME.role === 'Supervisor' ? '<button class="ghost" onclick="doAnchor()">链头锚定</button>' : ''}

@@ -61,6 +61,8 @@ public static class Guard
 
     public static async Task Validate(NpgsqlConnection conn, EventStore.Draft d, Caller caller)
     {
+        if (LicenseGate.BlocksWrites)
+            throw new GuardException("LicenseInvalid", "商业授权无效或离线超宽限：新增写入已冻结（读取/验真/证据包不受影响），请续订或恢复授权服务器连接");
         var t = d.Type;
         var p = d.Payload;
         string Ps(string k) => p[k]?.GetValue<string>() ?? "";

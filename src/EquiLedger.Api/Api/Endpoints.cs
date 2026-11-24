@@ -264,6 +264,15 @@ public static class Endpoints
             return Results.Json(new { detail = false, runs = JRows(runs) });
         });
 
+        // ---------- 商业授权状态（只读展示，不含密钥） ----------
+        app.MapGet("/api/license-status", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null) return Deny("未登录");
+            var s = LicenseGate.Current;
+            return Results.Json(new { status = s.Status, enforce = LicenseGate.Enforce, expiresAt = s.ExpiresAt, lastOkAt = s.LastOkAt, message = s.Message });
+        });
+
         // ---------- 银行代发批量文件（CSV，UTF-8 BOM，主流企业网银代发格式） ----------
         app.MapGet("/api/payroll-batch", async (HttpRequest req, string period) =>
         {

@@ -38,12 +38,63 @@ builder.Services.AddSingleton(store);
 builder.Services.AddSingleton(verifier);
 builder.Services.AddHostedService<PushService>();
 builder.Services.AddHostedService<PayrollAutoService>();
+builder.Services.AddHostedService<LicenseService>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 Endpoints.Map(app, db, store, verifier);
 app.Run();
+
+/// <summary>商业授权验权：启动即查、每 24h 复查（LicenseOS v2 license/check，出站 HTTPS）。成功验权时间落本地缓存供离线宽限；状态只影响写入闸门，不入事件链。</summary>
+public class LicenseService : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        var server = Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER") ?? "https://sz.djkz.top";
+        var apiKey = Environment.GetEnvironmentVariable("EQUI_LICENSE_API_KEY");
+        var key = Environment.GetEnvironmentVariable("EQUI_LICENSE_KEY");
+        var domain = Environment.GetEnvironmentVariable("EQUI_LICENSE_DOMAIN") ?? Environment.MachineName;
+        var grace = int.TryParse(Environment.GetEnvironmentVariable("EQUI_LICENSE_GRACE_DAYS"), out var g) ? g : 7;
+        var cachePath = Path.Combine(Environment.GetEnvironmentVariable("EQUI_LICENSE_CACHE_DIR") ?? "/data/license", "cache.json");
+        var client = new LicenseClient();
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                LicenseGate.Enforce = Environment.GetEnvironmentVariable("EQUI_LICENSE_ENFORCE") == "1";
+                if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(apiKey))
+                {
+                    LicenseGate.Current = new LicenseState("unconfigured", null, null, "未配置授权校验（EQUI_LICENSE_KEY 为空），社区模式运行");
+                }
+                else
+                {
+                    var cachedLastOk = ReadCache(cachePath);
+                    string? st = null; DateTimeOffset? exp = null;
+                    try { (st, exp) = await client.CheckAsync(server, apiKey, key, domain, ct); }
+                    catch (Exception ex) { Console.WriteLine($"授权验权网络异常：{ex.Message}"); }
+                    var state = LicensePolicy.Evaluate(st, exp, cachedLastOk, DateTimeOffset.UtcNow, grace);
+                    LicenseGate.Current = state;
+                    if (state.Status == "valid") WriteCache(cachePath, DateTimeOffset.UtcNow);
+                    Console.WriteLine($"授权状态：{state.Status} · {state.Message}");
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"授权服务异常：{ex.Message}"); }
+            await Task.Delay(TimeSpan.FromHours(24), ct);
+        }
+    }
+
+    private static DateTimeOffset? ReadCache(string p)
+    {
+        try { var n = JsonNode.Parse(File.ReadAllText(p)); return DateTimeOffset.TryParse(n?["lastOk"]?.GetValue<string>(), out var t) ? t : null; }
+        catch { return null; }
+    }
+    private static void WriteCache(string p, DateTimeOffset t)
+    {
+        try { Directory.CreateDirectory(Path.GetDirectoryName(p)!); File.WriteAllText(p, new JsonObject { ["lastOk"] = t.ToString("o") }.ToJsonString()); }
+        catch (Exception ex) { Console.WriteLine($"授权缓存写入失败：{ex.Message}"); }
+    }
+}
 
 /// <summary>月底自动算薪：指定日（默认每月最后一天）09:00 起若当期未算薪，以操作员名义自动提交 PayrollRun（依据=锁定工资规则快照哈希，auto=true 留痕）。计算可复算、全员推送；打款仍须人工回单确认（PayrollPaid）。</summary>
 public class PayrollAutoService : BackgroundService

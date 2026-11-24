@@ -34,11 +34,18 @@ services:
       EQUI_WOO_SECRET: "${EQUI_WOO_SECRET:-}"
       EQUI_PAYROLL_AUTO: "${EQUI_PAYROLL_AUTO:-1}"
       EQUI_PAYROLL_DAY: "${EQUI_PAYROLL_DAY:-}"
+      EQUI_LICENSE_SERVER: "${EQUI_LICENSE_SERVER:-https://sz.djkz.top}"
+      EQUI_LICENSE_API_KEY: "${EQUI_LICENSE_API_KEY:-}"
+      EQUI_LICENSE_KEY: "${EQUI_LICENSE_KEY:-}"
+      EQUI_LICENSE_DOMAIN: "${EQUI_LICENSE_DOMAIN:-}"
+      EQUI_LICENSE_ENFORCE: "${EQUI_LICENSE_ENFORCE:-0}"
+      EQUI_LICENSE_GRACE_DAYS: "${EQUI_LICENSE_GRACE_DAYS:-7}"
       EQUI_EVIDENCE_DIR: /data/evidence
     ports:
       - "8090:8080"
     volumes:
       - equi_evidence:/data/evidence
+      - equi_license:/data/license
     restart: unless-stopped
 
   # 可选：自动加密备份到自定义目录/NAS。启用方式见《唯一全面操作教程.md》§10.4
@@ -67,3 +74,4 @@ services:
 volumes:
   equi_pgdata:
   equi_evidence:
+  equi_license:
