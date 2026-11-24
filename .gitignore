@@ -1,0 +1,7 @@
+bin/
+obj/
+backups/
+.env
+*.user
+.vs/
+node_modules/

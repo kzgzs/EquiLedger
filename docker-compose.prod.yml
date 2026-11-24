@@ -1,0 +1,20 @@
+# 玄铁栈道 EquiLedger · 生产覆盖配置（与 docker-compose.yml 叠加使用）
+# 用法：docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# 版权所有 (c) 2026 XTZDDJ · 微信 XTZDDJ · QQ 248197309/68822685 · admin@djkz.top
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${EQUI_OWNER_PWD:?请在 .env 设置 EQUI_OWNER_PWD}
+    ports:
+      - "127.0.0.1:5433:5432"   # 数据库绝不暴露公网
+
+  api:
+    environment:
+      EQUI_OWNER_CS: "Host=db;Port=5432;Database=equiledger;Username=equi;Password=${EQUI_OWNER_PWD}"
+      EQUI_APP_CS: "Host=db;Port=5432;Database=equiledger;Username=equi_app;Password=${EQUI_APP_PWD:?请在 .env 设置 EQUI_APP_PWD}"
+    ports:
+      - "127.0.0.1:8090:8080"   # 仅经 Caddy/nginx 反代对外
+
+  backup:
+    environment:
+      PGPASSWORD: ${EQUI_OWNER_PWD}

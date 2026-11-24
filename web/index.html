@@ -1,0 +1,107 @@
+<!-- 玄铁栈道 EquiLedger · 版权所有 (c) 2026 XTZDDJ · 微信 XTZDDJ · QQ 248197309/68822685 · admin@djkz.top · 商业授权条件：保留本署名 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>玄铁栈道 EquiLedger · 企业智能计算治理系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><img src="/logo.png" alt="logo" class="brand-logo" onerror="this.style.display='none'"><b id="brandName">玄铁栈道</b> <span>EquiLedger</span><em>权力制衡 · 过程透明 · 责任追溯 · 自动核算 · 公平公正的企业统管智能系统</em></div>
+  <div class="head-right">
+    <button class="ghost" onclick="showDev()">关于/开发者</button>
+    <button class="ghost" onclick="showSponsor()">赞助开发</button>
+    <button id="themeBtn" class="ghost theme-btn" onclick="toggleTheme()" title="切换明暗模式">☀️</button>
+    <div id="userBox"></div>
+  </div>
+</header>
+
+<div id="authView" class="panel narrow">
+  <h2>登录</h2>
+  <input id="loginUser" placeholder="用户名">
+  <input id="loginPass" type="password" placeholder="密码">
+  <button onclick="login()">登录</button>
+  <div id="setupEntry">
+    <p class="hint">首次使用请先完成公司设立向导（仅一次，章程条款全体确认后入链固化）。</p>
+    <button class="ghost" onclick="showSetup()">公司设立向导</button>
+  </div>
+  <div id="authMsg" class="msg"></div>
+</div>
+
+<div id="setupView" class="panel setup-wide" style="display:none">
+  <div class="row" style="justify-content:space-between">
+    <h2>公司设立向导（可视化填写 · 全员实名 · 仅一次）</h2>
+    <button class="ghost" onclick="hideSetup()">← 返回登录</button>
+  </div>
+
+  <h3>第一步 · 选类型载入模板</h3>
+  <div class="row">
+    <select id="setupPreset">
+      <option value="llc-multi">有限责任公司（多人）</option>
+      <option value="llc-solo">一人有限责任公司（老板单账号）</option>
+      <option value="joint">股份有限公司</option>
+      <option value="sole">个人独资企业（无限责任）</option>
+      <option value="partner">合伙企业（先分后税）</option>
+      <option value="individual">个体工商户（经营所得减半）</option>
+      <option value="foreign">外商投资企业</option>
+      <option value="branch">分支机构（分公司）</option>
+    </select>
+    <button class="ghost" onclick="loadPreset()">载入模板</button>
+  </div>
+  <p class="hint">一人公司=只有一个股东的有限责任公司；个人独资企业/个体工商户承担无限责任、缴经营所得，不是一回事。名称后缀须与类型一致（个体户/个人独资名称不得含“公司”字样）。</p>
+
+  <h3>第二步 · 公司信息（请对照营业执照填写）</h3>
+  <div class="grid2">
+    <div><label>企业全名（营业执照全称）</label><input id="coName" placeholder="如：玄铁栈道科技有限责任公司"></div>
+    <div><label>企业类型</label><select id="coType">
+      <option>有限责任公司</option><option>股份有限公司</option><option>个人独资企业</option>
+      <option>合伙企业</option><option>个体工商户</option><option>外商投资企业</option><option>分支机构</option>
+    </select></div>
+    <div><label>注册资本（元）</label><input id="coCap" type="number" value="1000000"></div>
+    <div><label>行业标签（逗号分隔）</label><input id="coTags" value="软件"></div>
+  </div>
+
+  <h3>第三步 · 成员名单（全员实名：真实姓名 + 身份证号）</h3>
+  <p class="hint">股东人数不限，点「增加成员」添加；一人公司老板在 Operator 行填认缴额即兼唯一股东。身份证号仅用于实名存证，界面与接口一律脱敏。</p>
+  <table id="memberTable">
+    <thead><tr><th>角色</th><th>登录名</th><th>密码</th><th>真实姓名</th><th>身份证号</th><th>认缴额（股东填）</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <button class="ghost" onclick="addMember()">＋ 增加成员</button>
+
+  <h3>第四步 · 治理参数</h3>
+  <div class="grid2">
+    <div><label>表决通过门槛</label><select id="voteThreshold"><option value="0.5">过半数（50%）</option><option value="0.6667">三分之二（66.67%）</option></select></div>
+    <div><label>例行授权单笔上限（元）</label><input id="singleLimit" type="number" value="5000"></div>
+    <div><label>例行授权月度累计（元）</label><input id="monthlyCap" type="number" value="20000"></div>
+    <div><label>分红分配比例（0–1）</label><input id="payoutRatio" type="number" step="0.01" value="1"></div>
+    <div><label>强制分红下限（0–1，0=不强制）</label><input id="forceMinRatio" type="number" step="0.01" value="0.6"></div>
+  </div>
+
+  <h3>第五步 · 付款白名单（可后补）</h3>
+  <table id="wlTable"><thead><tr><th>收款账号</th><th>户名</th><th></th></tr></thead><tbody></tbody></table>
+  <button class="ghost" onclick="addWl()">＋ 增加白名单账户</button>
+
+  <details style="margin:12px 0"><summary class="hint">高级：额外章程条款（JSON 数组，可空；合伙企业分配比例已按认缴自动生成）</summary>
+    <textarea id="extraRules" rows="5" placeholder='[ { "kind": "Charter.Inheritance", "params": { "mode": "Inherit" } } ]'></textarea>
+  </details>
+
+  <button onclick="doSetup()">全体实名确认 · 设立入链</button>
+  <div id="setupMsg" class="msg"></div>
+</div>
+
+<div id="mainView" style="display:none">
+  <nav id="tabs"></nav>
+  <div id="tabBody"></div>
+</div>
+
+<div id="modal" style="display:none"><div class="modal-inner">
+  <div class="modal-head"><b id="modalTitle"></b><button class="ghost" onclick="closeModal()">×</button></div>
+  <div id="modalBody"></div>
+</div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

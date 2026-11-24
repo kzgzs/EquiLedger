@@ -1,0 +1,428 @@
+// 玄铁栈道 EquiLedger · 企业智能计算治理系统
+// 版权所有 (c) 2026 XTZDDJ · 微信 XTZDDJ · QQ 248197309/68822685 · admin@djkz.top
+// 商业授权条件：保留本署名。移除/篡改署名即授权终止并构成侵权。
+using System.Text.Json.Nodes;
+using EquiLedger.Engine;
+using EquiLedger.Storage;
+using Npgsql;
+
+namespace EquiLedger.Governance;
+
+public class GuardException : Exception
+{
+    public string Kind;
+    public GuardException(string kind, string message) : base(message) { Kind = kind; }
+}
+
+public record Caller(string UserId, string Role, string? PartyId, bool Enabled, bool Frozen);
+
+/// <summary>治理守卫：任何写请求先过 身份→权限→回避→决议/授权→规则守卫（治理层在业务层之上游）。</summary>
+public static class Guard
+{
+    private static readonly HashSet<string> StrictResolution = new()
+    {
+        "RuleActivated", "ShareSubscription", "ShareTransfer", "ShareExit", "DividendApproved",
+        "BonusGranted", "ModuleSwitchChanged", "InvestmentReceived", "OperatorHandover",
+        "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade"
+    };
+    private static readonly HashSet<string> RoutineOrResolution = new()
+    {
+        "ExpenseRecorded", "ContractSigned", "EmployeeHired", "SalesOrderConfirmed"
+    };
+    // 执行/采集类：执行已生效决议或锁定规则、只读采集，凭依据即可（全量留痕推送）
+    private static readonly HashSet<string> ExecutionOrCollection = new()
+    {
+        "CapitalPaidIn", "DividendPaid", "CollectionReceived", "RevenueRecorded",
+        "PayrollRun", "BankFlowImported", "EvidenceUploaded", "RelationDeclared", "InvestorQualified", "ShareholderDeceased", "TodoCompleted", "LegalEntryAdded", "InvestmentReturnReceived", "PayrollPaid"
+    };
+    private static readonly Dictionary<string, string> RoutineCategory = new()
+    {
+        ["ExpenseRecorded"] = "Expense", ["ContractSigned"] = "Contract", ["EmployeeHired"] = "Hire", ["SalesOrderConfirmed"] = "Sales"
+    };
+    private static readonly Dictionary<string, string[]> AllowedResolutionKinds = new()
+    {
+        ["RuleActivated"] = new[] { "RuleChange", "PayrollChange", "CommissionChange", "CharterAmend" },
+        ["ShareSubscription"] = new[] { "CapitalIncrease", "ShareSubscription", "Founding" },
+        ["ShareTransfer"] = new[] { "ShareTransfer" },
+        ["ShareExit"] = new[] { "ShareExit" },
+        ["DividendApproved"] = new[] { "Dividend" },
+        ["BonusGranted"] = new[] { "Bonus" },
+        ["ModuleSwitchChanged"] = new[] { "ModuleSwitch" },
+        ["InvestmentReceived"] = new[] { "Financing", "CapitalIncrease" },
+        ["InvestmentMade"] = new[] { "ExternalInvestment" },
+        ["OperatorHandover"] = new[] { "OperatorHandover" },
+        ["CorrectionRecorded"] = new[] { "Correction" },
+        ["PeriodClosed"] = new[] { "PeriodClose" },
+        ["EmployeeLeft"] = new[] { "EmployeeLeave" },
+        ["CompanyInfoChanged"] = new[] { "CompanyChange" },
+        ["AccountAdded"] = new[] { "AccountManage", "General" },
+        ["ShareholderDeceased"] = new[] { "ShareholderDeath", "General" },
+    };
+
+    public static async Task Validate(NpgsqlConnection conn, EventStore.Draft d, Caller caller)
+    {
+        var t = d.Type;
+        var p = d.Payload;
+        string Ps(string k) => p[k]?.GetValue<string>() ?? "";
+        decimal Pd(string k) => ApplyCtx.JsonNum(p[k]);
+        static void ValidateIdentity(JsonObject a)
+        {
+            var rn = a["realName"]?.GetValue<string>();
+            var id = a["idNumber"]?.GetValue<string>();
+            var un = a["username"]?.GetValue<string>() ?? "?";
+            if (string.IsNullOrWhiteSpace(rn) || string.IsNullOrWhiteSpace(id) || !System.Text.RegularExpressions.Regex.IsMatch(id, @"^\d{17}[\dXx]$"))
+                throw new GuardException("InvalidIdentity", $"账号 {un} 缺真实姓名或有效18位身份证号（全员实名制）");
+        }
+        if (t == "AccountAdded")
+        {
+            ValidateIdentity(p);
+            if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.accounts WHERE username=@u", ("u", Ps("username")))) > 0)
+                throw new GuardException("DuplicateAccount", "登录名已存在");
+        }
+
+        if (t == "CompanyFounded")
+        {
+            if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.company")) > 0)
+                throw new GuardException("DuplicateSetup", "公司已完成设立，设立向导只能执行一次");
+            if (d.Payload["accounts"] is JsonArray accs)
+                foreach (JsonObject a in accs) ValidateIdentity(a);
+            return;
+        }
+        if (t == "SecurityAlert") return; // 系统告警通道
+        if (!caller.Enabled || caller.Frozen)
+            throw new GuardException("AccountDisabled", "账号已停用/冻结，一切操作被拒绝");
+
+        // ---- 角色通道 ----
+        if (t == "AccountStatusChanged")
+        {
+            if (caller.Role != "Admin") throw new GuardException("RoleDenied", "仅系统管理员可管理账号可用性（且无业务数据权限）");
+            return;
+        }
+        if (t is "ResolutionProposed" or "ResolutionRecorded")
+        {
+            if (caller.Role is not ("Operator" or "Shareholder")) throw new GuardException("RoleDenied", "议案通道仅限股东/操作员");
+            if (t == "ResolutionRecorded" && caller.Role != "Operator") throw new GuardException("RoleDenied", "线下决议纪要由操作员凭签名纪要入链");
+            if ((d.Evidence as JsonArray)?.Count is null or 0) throw new GuardException("NoEvidence", "议案/决议必须附材料或签名纪要（P4 凡变更必有依据）");
+            return;
+        }
+        if (t == "ResolutionVoted")
+        {
+            // 股东表决；一人公司老板可兼操作员与唯一股东（双身份），仅能为本人持股表决
+            var soleOwner = caller.Role == "Operator" && caller.PartyId != null && Ps("partyId") == caller.PartyId;
+            if (caller.Role != "Shareholder" && !soleOwner) throw new GuardException("RoleDenied", "表决权限属股东（治理通道，非业务写入）");
+            return;
+        }
+        if (t == "ContractAccessed")
+        {
+            var cid = Ps("contractId");
+            var rows = await conn.Rows("SELECT secrecy,parties FROM proj.contracts WHERE contract_id=@c", ("c", cid));
+            if (rows.Count == 0) throw new GuardException("NotFound", "合同不存在");
+            var secrecy = Pg.S(rows[0]["secrecy"]);
+            if (secrecy == "Private")
+            {
+                var parties = Pg.J(rows[0]["parties"]).ToJsonString();
+                var isParty = caller.PartyId != null && parties.Contains(caller.PartyId);
+                var dualAuth = p["dualAuthorized"]?.GetValue<bool>() == true; // 监事调查/司法导出双授权
+                if (!isParty && !(caller.Role == "Supervisor" && dualAuth))
+                    throw new GuardException("PrivateContract", "私密协议仅签署当事人可查；监事调查/司法导出需双授权且访问留痕");
+            }
+            return;
+        }
+        if (caller.Role != "Operator")
+            throw new GuardException("NotOperator", "单一授权操作员模式：非操作员的一切写请求拒绝（决策在会议、计算在引擎、执行在一人）");
+
+        // ---- 依据（P4）----
+        var evCount = (d.Evidence as JsonArray)?.Count ?? 0;
+        if (t != "EvidenceUploaded" && evCount == 0)
+            throw new GuardException("NoEvidence", "缺少依据附件，事件不生效（P4：凡变更必有依据）");
+
+        // ---- 期间锁定 ----
+        var period = p["period"]?.GetValue<string>();
+        if (period != null && Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.period_locks WHERE period=@p", ("p", period))) > 0)
+            throw new GuardException("PeriodLocked", $"期间 {period} 已结账锁定，只能做当期更正事件（红字冲销）");
+
+        // ---- 决议 / 例行授权 ----
+        if (StrictResolution.Contains(t) || RoutineOrResolution.Contains(t))
+        {
+            var usedRoutine = false;
+            if (d.ResolutionNo is null && RoutineOrResolution.Contains(t))
+            {
+                usedRoutine = await CheckRoutineAuth(conn, t, Pd("amount"), caller);
+                if (usedRoutine) d.Payload["routineCategory"] = RoutineCategory[t];
+            }
+            if (!usedRoutine)
+            {
+                if (string.IsNullOrEmpty(d.ResolutionNo))
+                    throw new GuardException("NoResolution", "无决议，不提交：写操作必须绑定有效决议编号（或例行授权额度内）");
+                var rr = await conn.Rows("SELECT * FROM proj.resolutions WHERE resolution_no=@r", ("r", d.ResolutionNo));
+                if (rr.Count == 0) throw new GuardException("NoResolution", "决议编号不存在");
+                var res = rr[0];
+                if (!(bool)res["passed"]!) throw new GuardException("ResolutionNotPassed", "决议未通过，不得执行");
+                if ((bool)res["consumed"]!) throw new GuardException("ResolutionConsumed", "决议已被消费（一次决议一次执行），不得重复使用");
+                var kind = Pg.S(res["kind"]);
+                if (AllowedResolutionKinds.TryGetValue(t, out var allowed) && !allowed.Contains(kind) && kind != "General")
+                    throw new GuardException("ResolutionKind", $"决议类型 {kind} 不适用于 {t}（需 {string.Join("/", allowed)}）");
+                if (AllowedResolutionKinds.TryGetValue(t, out var a2) && kind == "General" && StrictResolution.Contains(t) && t != "ShareholderDeceased")
+                    throw new GuardException("ResolutionKind", "关键操作不接受通用决议，必须专项决议");
+                // 决议一致性比对：决议说涨薪到8000，录成9000 → 直接拒绝
+                var resParams = (JsonObject)Pg.J(res["params"]);
+                CompareConsistency(resParams, p, "");
+            }
+        }
+        else if (!ExecutionOrCollection.Contains(t) && t != "CompanyFounded")
+        {
+            throw new GuardException("UnknownType", $"事件类型 {t} 未在治理协议注册");
+        }
+
+        // ---- 事件专项守卫 ----
+        switch (t)
+        {
+            case "CapitalPaidIn":
+                {
+                    var cap = await CapRow(conn, Ps("partyId"));
+                    if (cap is null) throw new GuardException("NoPosition", "股东不存在");
+                    if (Pd("amount") <= 0 || Pd("amount") > Pg.D(cap["subscribed"]) - Pg.D(cap["paid_in"]))
+                        throw new GuardException("AmountMismatch", "实缴金额超过认缴余额");
+                    break;
+                }
+            case "PayrollPaid":
+                {
+                    var payPeriod = Ps("period");
+                    var payRuns = await conn.Rows("SELECT status,totals FROM proj.payroll_runs WHERE period=@p", ("p", payPeriod));
+                    if (payRuns.Count == 0) throw new GuardException("NoRun", "该期间尚未算薪，先提交 PayrollRun");
+                    if (Pg.S(payRuns[0]["status"]) != "Calculated") throw new GuardException("AlreadyPaid", "该期间已确认发放，不可重复确认");
+                    var payNet = decimal.TryParse(Pg.J(payRuns[0]["totals"])["net"]?.ToString(), out var pn) ? pn : 0m;
+                    if (Pd("totalAmount") != payNet) throw new GuardException("AmountMismatch", $"确认金额须等于实发合计 {payNet}（与银行回单一致才入链）");
+                    break;
+                }
+            case "ShareSubscription":
+            case "ShareTransfer":
+                {
+                    await RequireSignedContract(conn, Ps("contractId"), new[] { "股权类", "融资类" });
+                    if (t == "ShareTransfer")
+                    {
+                        var res = await ResolutionParams(conn, d.ResolutionNo!);
+                        if (res?["preemptionWaived"]?.GetValue<bool>() != true)
+                            throw new GuardException("Preemption", "对外转让必须走完通知→优先购买权行使期流程（决议须载明其他股东放弃优先购买权）");
+                    }
+                    break;
+                }
+            case "ShareExit":
+                {
+                    var cap = await CapRow(conn, Ps("partyId"));
+                    if (cap is null || Pd("capitalAmount") > Pg.D(cap["subscribed"]))
+                        throw new GuardException("AmountMismatch", "退股额度超过持股");
+                    break;
+                }
+            case "DividendApproved":
+                {
+                    var plan = await conn.Rows("SELECT status,distributable FROM proj.dividend_plans WHERE plan_id=@p", ("p", Ps("planId")));
+                    if (plan.Count == 0 || Pg.S(plan[0]["status"]) != "Candidate")
+                        throw new GuardException("PlanState", "分红方案不存在或非候选稿（结果数字由引擎生成，人工只能决议）");
+                    break;
+                }
+            case "DividendPaid":
+                {
+                    var done = await conn.Scalar("SELECT status FROM proj.todos WHERE todo_id=@t", ("t", $"TD-TaxFiling-{Ps("planId")}"));
+                    if (Pg.S(done) != "Done")
+                        throw new GuardException("TaxNotFiled", "代扣个税未申报，不允许标记分红完成");
+                    break;
+                }
+            case "RuleActivated":
+                {
+                    if (p["effectiveFrom"] is JsonValue ef && DateTimeOffset.TryParse(ef.GetValue<string>(), out var eff) && eff.Date < DateTime.UtcNow.Date)
+                        throw new GuardException("Retroactive", "规则只对未来生效，禁止追溯修改（P1 规则前置）");
+                    var kind = Ps("kind");
+                    if (kind == "Charter.ExemptLoss")
+                        throw new GuardException("InvalidClause", "“某股东永远不承担亏损”类条款与公司法强制性规定冲突，无效条款拦截");
+                    if (kind == "Partnership.Allocation" && p["params"]?["partners"] is JsonArray pa)
+                    {
+                        var sum = 0m; var anyZero = false;
+                        foreach (JsonObject x in pa) { var r = x["ratio"]!.GetValue<decimal>(); sum += r; if (r <= 0) anyZero = true; }
+                        if (Math.Abs(sum - 1m) > 0.000001m || anyZero)
+                            throw new GuardException("InvalidClause", "合伙协议不得约定将全部利润分配给部分合伙人（159号文），比例之和须为1且人人有份");
+                    }
+                    break;
+                }
+            case "ContractSigned": await ContractGuard(conn, d); break;
+            case "EmployeeLeft":
+                if (p["selfConfirmed"]?.GetValue<bool>() != true)
+                    throw new GuardException("SelfConfirm", "离职事件需本人实名确认，代签不可能（P5）");
+                break;
+            case "ModuleSwitchChanged": await ModuleGuard(conn, d); break;
+            case "InvestmentReceived": await InvestmentGuard(conn, d); break;
+            case "ExpenseRecorded":
+                {
+                    var acct = p["payeeAccount"]?.GetValue<string>();
+                    if (acct != null && Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.whitelist_accounts WHERE account_no=@a", ("a", acct))) == 0)
+                        throw new GuardException("Whitelist", "收款账户不在白名单（新增账户需双人复核决议），付款拦截");
+                    break;
+                }
+            case "OperatorHandover":
+                {
+                    var res = await ResolutionParams(conn, d.ResolutionNo!);
+                    if (res?["supervisorSign"]?.GetValue<bool>() != true || res?["shareholderSign"]?.GetValue<bool>() != true)
+                        throw new GuardException("DualSign", "后备操作员紧急启用需监事+股东代表双签决议");
+                    break;
+                }
+        }
+    }
+
+    private static async Task<bool> CheckRoutineAuth(NpgsqlConnection conn, string type, decimal amount, Caller caller)
+    {
+        var rows = await conn.Rows("SELECT params FROM proj.rule_versions WHERE kind='RoutineAuth' AND status='Active' ORDER BY version DESC LIMIT 1");
+        if (rows.Count == 0) return false;
+        var rule = (JsonObject)Pg.J(rows[0]["params"]);
+        var cat = RoutineCategory[type];
+        var cats = rule["categories"] as JsonArray;
+        if (cats is null || !cats.Any(x => x!.GetValue<string>() == cat)) return false;
+        var single = ApplyCtx.JsonNum(rule["singleLimit"]);
+        var monthly = ApplyCtx.JsonNum(rule["monthlyCap"]);
+        if (amount > single) return false;
+        var month = DateTime.UtcNow.ToString("yyyy-MM");
+        var used = Pg.D(await conn.Scalar("SELECT used FROM proj.routine_usage WHERE month=@m AND category=@c", ("m", month), ("c", cat)));
+        if (used + amount > monthly) return false;
+        return true;
+    }
+
+    private static void CompareConsistency(JsonObject resParams, JsonObject payload, string path)
+    {
+        foreach (var kv in resParams)
+        {
+            if (kv.Key is "subjectParty" or "preemptionWaived" or "supervisorSign" or "shareholderSign" or "note") continue;
+            var pv = payload[kv.Key];
+            if (pv is null) throw new GuardException("ResolutionMismatch", $"决议参数 {path}{kv.Key} 在录入内容中缺失");
+            CompareNode(kv.Value, pv, path + kv.Key + ".");
+        }
+    }
+
+    private static void CompareNode(JsonNode? a, JsonNode? b, string path)
+    {
+        if (a is JsonObject ao && b is JsonObject bo) { CompareConsistency(ao, bo, path); return; }
+        if (a is JsonArray aa && b is JsonArray ba)
+        {
+            if (aa.Count != ba.Count) throw new GuardException("ResolutionMismatch", $"决议与录入不一致：{path} 数组长度");
+            for (var i = 0; i < aa.Count; i++) CompareNode(aa[i], ba[i], path + $"[{i}].");
+            return;
+        }
+        decimal? Na(JsonNode? n) => n is JsonValue v && v.TryGetValue(out decimal d) ? d : null;
+        var na = Na(a); var nb = Na(b);
+        if (na != null && nb != null) { if (na != nb) throw new GuardException("ResolutionMismatch", $"决议与录入不一致：{path} 决议={na} 录入={nb}"); return; }
+        var sa = a?.ToJsonString(); var sb = b?.ToJsonString();
+        if (sa != sb) throw new GuardException("ResolutionMismatch", $"决议与录入不一致：{path} 决议={sa} 录入={sb}");
+    }
+
+    private static async Task<Dictionary<string, object?>?> CapRow(NpgsqlConnection conn, string partyId)
+    {
+        var rows = await conn.Rows(@"SELECT cp.* FROM proj.cap_positions cp WHERE cp.cap_version=(SELECT MAX(version) FROM proj.cap_versions) AND cp.party_id=@p", ("p", partyId));
+        return rows.FirstOrDefault();
+    }
+
+    private static async Task<JsonObject?> ResolutionParams(NpgsqlConnection conn, string no)
+    {
+        var rows = await conn.Rows("SELECT params FROM proj.resolutions WHERE resolution_no=@r", ("r", no));
+        return rows.Count == 0 ? null : (JsonObject)Pg.J(rows[0]["params"]);
+    }
+
+    private static async Task RequireSignedContract(NpgsqlConnection conn, string contractId, string[] categories)
+    {
+        if (string.IsNullOrEmpty(contractId)) throw new GuardException("NoContract", "合同未签署入链，股权登记不生效（M7：合同是规则来源）");
+        var rows = await conn.Rows("SELECT category,status FROM proj.contracts WHERE contract_id=@c", ("c", contractId));
+        if (rows.Count == 0 || Pg.S(rows[0]["status"]) != "Signed" || !categories.Contains(Pg.S(rows[0]["category"])))
+            throw new GuardException("NoContract", "必须绑定已签署的股权类/融资类合同");
+    }
+
+    private static async Task ContractGuard(NpgsqlConnection conn, EventStore.Draft d)
+    {
+        var p = d.Payload;
+        var type = p["contractType"]?.GetValue<string>() ?? "";
+        var clauses = p["clauses"] as JsonArray ?? new JsonArray();
+        decimal Num(JsonNode? n) => ApplyCtx.JsonNum(n);
+
+        if (type.Contains("放弃社保") || clauses.Any(x => x?["kind"]?.GetValue<string>() == "SiWaiver"))
+            throw new GuardException("SiWaiverInvalid", "“自愿放弃社保”约定依法无效（法释〔2025〕12号第十九条），拒绝录入为免缴依据；员工据此解约可主张经济补偿N");
+        if (type == "竞业限制协议")
+        {
+            var months = Num(clauses.FirstOrDefault(x => x?["kind"]?.GetValue<string>() == "NonCompete")?["months"]);
+            var comp = Num(clauses.FirstOrDefault(x => x?["kind"]?.GetValue<string>() == "NonCompete")?["monthlyCompensation"]);
+            if (months > 24) throw new GuardException("InvalidClause", "竞业限制期限不得超过2年（劳动合同法第二十四条）");
+            if (comp <= 0) throw new GuardException("InvalidClause", "竞业限制必须约定按月经济补偿，否则协议对员工无约束力");
+        }
+        if (type == "培训服务期协议")
+        {
+            var fee = Num(clauses.FirstOrDefault(x => x?["kind"]?.GetValue<string>() == "Training")?["trainingFee"]);
+            var penalty = Num(clauses.FirstOrDefault(x => x?["kind"]?.GetValue<string>() == "Training")?["penalty"]);
+            if (penalty > fee) throw new GuardException("InvalidClause", "服务期违约金不得超过培训费用（劳动合同法第二十二条）");
+        }
+        if (type == "担保合同")
+        {
+            var rn = d.ResolutionNo;
+            var ok = rn != null && Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.resolutions WHERE resolution_no=@r AND kind='Guarantee' AND passed=TRUE", ("r", rn))) > 0;
+            if (!ok) throw new GuardException("GuaranteeBlocked", "对外担保未经股东会决议，系统硬拦截并向全体股东告警");
+        }
+        var text = System.Text.Json.JsonSerializer.Serialize(p, new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        if ((type.Contains("投资") || type.Contains("入股") || p["category"]?.GetValue<string>() == "融资类") &&
+            (text.Contains("保本") || text.Contains("保收益") || text.Contains("固定回报") || text.Contains("承诺回购保")))
+            throw new GuardException("IllegalFundraising", "保本保收益/固定回报条款涉嫌非法集资，守卫直接拦截");
+    }
+
+    private static async Task ModuleGuard(NpgsqlConnection conn, EventStore.Draft d)
+    {
+        var mid = d.Payload["moduleId"]?.GetValue<string>() ?? "";
+        var target = d.Payload["targetState"]?.GetValue<string>() ?? "";
+        var rows = await conn.Rows("SELECT * FROM proj.module_states WHERE module_id=@m", ("m", mid));
+        if (rows.Count == 0) throw new GuardException("NoModule", "模块不存在");
+        var m = rows[0];
+        if (target is "Disabled" or "Suspended" or "Archived")
+        {
+            if ((bool)m["mandatory"]!)
+            {
+                if (mid == "M13" && Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.employees WHERE leave_date IS NULL")) > 0)
+                    throw new GuardException("MandatoryModule", "存在在册员工，社保模块不可停用（法定义务）");
+                if (mid != "M13")
+                    throw new GuardException("MandatoryModule", "基础治理模块不可关闭（治理地基）");
+            }
+            return;
+        }
+        if (target == "Enabled")
+        {
+            var prereqs = (JsonArray)Pg.J(m["prereqs"]);
+            foreach (JsonObject q in prereqs)
+            {
+                var kind = q["kind"]!.GetValue<string>(); var value = q["value"]!.GetValue<string>();
+                var ok = kind switch
+                {
+                    "CompanyType" => Pg.S(await conn.Scalar("SELECT company_type FROM proj.company WHERE id=1")) == value,
+                    "IndustryTag" => Pg.S(await conn.Scalar("SELECT industry_tags FROM proj.company WHERE id=1")).Contains(value),
+                    "ResolutionKind" => Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.resolutions WHERE kind=@k AND passed=TRUE", ("k", value))) > 0,
+                    _ => false
+                };
+                if (!ok) throw new GuardException("PrereqUnmet", $"模块 {mid} 先决条件未满足：{kind}={value}（开关置灰，强行开启被拒绝并留痕）");
+            }
+        }
+    }
+
+    private static async Task InvestmentGuard(NpgsqlConnection conn, EventStore.Draft d)
+    {
+        var p = d.Payload;
+        if (Pg.S(await conn.Scalar("SELECT state FROM proj.module_states WHERE module_id='M15'")) != "Enabled")
+            throw new GuardException("ModuleDisabled", "在线投资模块未启用（需融资决议+合规检查）");
+        var investor = p["investorId"]?.GetValue<string>() ?? "";
+        if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.investors WHERE investor_id=@i AND qualified=TRUE", ("i", investor))) == 0)
+            throw new GuardException("NotQualified", "投资人未完成合格投资者认定，禁止注资");
+        var cid = p["contractId"]?.GetValue<string>() ?? "";
+        var contracts = await conn.Rows("SELECT status,category,doc_hash FROM proj.contracts WHERE contract_id=@c", ("c", cid));
+        if (contracts.Count == 0 || Pg.S(contracts[0]["status"]) != "Signed")
+            throw new GuardException("NoContract", "入股合同未电子签署入链，到账不确认为注资（款项挂异常原路处理）");
+        var amount = ApplyCtx.JsonNum(p["amount"]);
+        var clauseAmount = p["contractAmount"] is null ? -1m : ApplyCtx.JsonNum(p["contractAmount"]);
+        if (clauseAmount != amount)
+            throw new GuardException("AmountMismatch", "到账与合同金额不符（多付/少付/第三方代付），挂异常不确认入股");
+        var companyType = Pg.S(await conn.Scalar("SELECT company_type FROM proj.company WHERE id=1"));
+        var limit = companyType == "股份有限公司" ? 200 : 50;
+        var count = Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.cap_positions WHERE cap_version=(SELECT MAX(version) FROM proj.cap_versions) AND status='Normal'"));
+        var isNew = await CapRow(conn, investor) is null;
+        if (count + (isNew ? 1 : 0) > limit)
+            throw new GuardException("HeadcountRedline", $"股东人数触及红线（{limit}人），融资流程冻结——越线涉嫌擅自公开发行/非法集资");
+    }
+}

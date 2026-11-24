@@ -1,0 +1,4 @@
+# 玄铁栈道 EquiLedger · 版权所有 (c) 2026 XTZDDJ · 微信 XTZDDJ · QQ 248197309/68822685 · admin@djkz.top
+# 商业授权条件：保留本署名。移除/篡改署名即授权终止并构成侵权。
+FROM postgres:16-alpine
+RUN apk add --no-cache openssl
