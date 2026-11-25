@@ -168,29 +168,58 @@ public class PushService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var url = Environment.GetEnvironmentVariable("EQUI_WEBHOOK_URL");
+        var legacyUrl = Environment.GetEnvironmentVariable("EQUI_WEBHOOK_URL");
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await using var conn = _db.App();
-                var pending = await conn.Rows("SELECT id,channel,summary FROM proj.notifications WHERE push_status='Pending' ORDER BY id LIMIT 50");
+                var groups = (await conn.Rows("SELECT group_id,kind,department,webhook FROM proj.notify_groups WHERE enabled=TRUE"))
+                    .Select(g => (groupId: Pg.S(g["group_id"]), kind: Pg.S(g["kind"]), department: Pg.S(g["department"]), webhook: Pg.S(g["webhook"]))).ToList();
+                var bindings = (await conn.Rows("SELECT group_id,event_type FROM proj.notify_bindings"))
+                    .Select(b => (groupId: Pg.S(b["group_id"]), eventType: Pg.S(b["event_type"]))).ToList();
+                var pending = await conn.Rows("SELECT id,channel,summary,source_event_id FROM proj.notifications WHERE push_status='Pending' ORDER BY id LIMIT 50");
                 foreach (var n in pending)
                 {
                     var status = "Logged";
-                    if (!string.IsNullOrEmpty(url) && Pg.S(n["channel"]) == "WorkGroup")
+                    if (Pg.S(n["channel"]) == "WorkGroup")
                     {
-                        try
+                        var summary = Pg.J(n["summary"]);
+                        var type = summary["eventType"]?.ToString() ?? "";
+                        var payloadNode = await conn.Scalar("SELECT payload FROM events.event_log WHERE event_id=@e", ("e", n["source_event_id"]));
+                        var payload = payloadNode is null or DBNull ? new JsonObject() : Pg.J(payloadNode);
+                        var (lvl, _) = EquiLedger.Engine.NotifyPolicy.Classify(type, payload);
+                        var high = lvl == EquiLedger.Engine.NotifyPolicy.Level.High;
+                        var filtered = EquiLedger.Engine.NotifyPolicy.Filter(payload as JsonObject ?? new JsonObject());
+                        var refNo = summary["resolutionNo"]?.ToString() ?? $"SEQ-{summary["seq"]}";
+                        var hashFull = summary["hash"]?.ToString() ?? "";
+                        var hash8 = hashFull[..Math.Min(8, hashFull.Length)];
+                        if (groups.Count == 0)
                         {
-                            var summary = Pg.J(n["summary"]);
-                            var text = $"【EquiLedger】{summary["eventType"]} | 操作员 {summary["actor"]} | 决议 {summary["resolutionNo"] ?? "例行/执行"}\n影响清单：\n" +
-                                       string.Join("\n", (summary["impacts"] as JsonArray ?? new JsonArray()).Select(x => "· " + x!.GetValue<string>())) +
-                                       "\n—— " + EquiLedger.Core.HashChain.Attribution;
-                            var card = new JsonObject { ["msgtype"] = "text", ["text"] = new JsonObject { ["content"] = text } };
-                            var resp = await _http.PostAsync(url, new StringContent(card.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct);
-                            status = resp.IsSuccessStatusCode ? "Sent" : "Failed";
+                            // 未配置群组：兼容旧单 webhook（仍走分级与过滤）
+                            if (!string.IsNullOrEmpty(legacyUrl))
+                                status = await Send(legacyUrl, EquiLedger.Engine.NotifyPolicy.Render("company", type, refNo, filtered, high, hash8), ct) ? "Sent" : "Failed";
                         }
-                        catch { status = "Failed"; }
+                        else
+                        {
+                            var targets = EquiLedger.Engine.NotifyPolicy.Route(groups.Select(g => (g.groupId, g.kind, g.department)), bindings, type, payload);
+                            if (targets.Count == 0) status = "NoRoute"; // 默认拒绝：未绑定/超范围不推送
+                            else
+                            {
+                                var okAll = true;
+                                foreach (var gid in targets)
+                                {
+                                    var g = groups.First(x => x.groupId == gid);
+                                    var text = EquiLedger.Engine.NotifyPolicy.Render(g.kind, type, refNo, filtered, high, hash8);
+                                    var ok = await Send(g.webhook, text, ct);
+                                    okAll &= ok;
+                                    await conn.Exec("INSERT INTO proj.notify_logs(log_id,notification_id,group_id,event_type,level,digest,content_hash,status,sent_at) VALUES(@l,@n,@g,@t,@lv,@d,@h,@s,@at)",
+                                        ("l", $"NL-{n["id"]}-{gid}"), ("n", Convert.ToInt64(n["id"])), ("g", gid), ("t", type),
+                                        ("lv", lvl.ToString()), ("d", high), ("h", EquiLedger.Core.HashChain.Sha256(text)), ("s", ok ? "Sent" : "Failed"), ("at", DateTime.UtcNow));
+                                }
+                                status = okAll ? "Sent" : "Failed";
+                            }
+                        }
                     }
                     await conn.Exec("UPDATE proj.notifications SET push_status=@s WHERE id=@i", ("s", status), ("i", n["id"]));
                 }
@@ -198,5 +227,19 @@ public class PushService : BackgroundService
             catch (Exception ex) { Console.WriteLine($"推送服务异常：{ex.Message}"); }
             await Task.Delay(3000, ct);
         }
+    }
+
+    private async Task<bool> Send(string url, string text, CancellationToken ct)
+    {
+        try
+        {
+            var content = text + "\n—— " + EquiLedger.Core.HashChain.Attribution;
+            var card = url.Contains("open.feishu.cn")
+                ? new JsonObject { ["msg_type"] = "text", ["content"] = new JsonObject { ["text"] = content } }
+                : new JsonObject { ["msgtype"] = "text", ["text"] = new JsonObject { ["content"] = content } };
+            var resp = await _http.PostAsync(url, new StringContent(card.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
     }
 }

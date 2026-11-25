@@ -429,3 +429,62 @@ INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_bal
  ('StockAdjust','5602-STK','管理费用-存货盘盈亏','pl_expense','debit','material'),
  ('AssetDisposalGainLoss','5711-ASSET','资产处置损益','pl_expense','debit','asset')
 ON CONFLICT (account_key) DO NOTHING;
+
+-- ============ 第二体系贯通：采购八步链 / 借款 / 纳税申报 ============
+CREATE TABLE IF NOT EXISTS proj.purchase_requests (
+    req_no TEXT PRIMARY KEY, department TEXT NOT NULL, items JSONB NOT NULL, reason TEXT,
+    status TEXT NOT NULL DEFAULT 'Requested', source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.purchase_orders (
+    po_no TEXT PRIMARY KEY, req_no TEXT NOT NULL, supplier TEXT NOT NULL, items JSONB NOT NULL,
+    expected_date DATE, status TEXT NOT NULL DEFAULT 'Open', paid_amount NUMERIC(19,4) NOT NULL DEFAULT 0,
+    source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.purchase_deliveries (
+    delivery_no TEXT PRIMARY KEY, po_no TEXT NOT NULL, items JSONB NOT NULL, delivered_date DATE, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.purchase_inspections (
+    inspection_no TEXT PRIMARY KEY, delivery_no TEXT NOT NULL, po_no TEXT NOT NULL, accepted JSONB NOT NULL,
+    rejected JSONB NOT NULL, inspector TEXT NOT NULL, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.purchase_payments (
+    pay_id TEXT PRIMARY KEY, po_no TEXT NOT NULL, amount NUMERIC(19,4) NOT NULL, receipt_hash TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.loans (
+    loan_id TEXT PRIMARY KEY, lender TEXT NOT NULL, principal NUMERIC(19,4) NOT NULL, annual_rate NUMERIC(9,6) NOT NULL,
+    term_months INT NOT NULL, start_date DATE NOT NULL, outstanding_principal NUMERIC(19,4) NOT NULL,
+    accrued_interest NUMERIC(19,4) NOT NULL DEFAULT 0, paid_interest NUMERIC(19,4) NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'Active', source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.loan_interest (
+    loan_id TEXT NOT NULL, period CHAR(7) NOT NULL, amount NUMERIC(19,4) NOT NULL, source_event_id UUID NOT NULL,
+    PRIMARY KEY (loan_id, period)
+);
+CREATE TABLE IF NOT EXISTS proj.tax_returns (
+    return_id TEXT PRIMARY KEY, period CHAR(7) NOT NULL, kind TEXT NOT NULL, amount NUMERIC(19,4) NOT NULL,
+    detail JSONB NOT NULL, status TEXT NOT NULL DEFAULT 'Filed', source_event_id UUID NOT NULL,
+    UNIQUE (period, kind)
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON proj.purchase_requests, proj.purchase_orders, proj.purchase_deliveries, proj.purchase_inspections, proj.purchase_payments, proj.loans, proj.loan_interest, proj.tax_returns TO equi_app;
+
+-- ============ 群通知治理：群组/绑定/推送留痕（敏感分级在代码强制） ============
+CREATE TABLE IF NOT EXISTS proj.notify_groups (
+    group_id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, department TEXT NOT NULL DEFAULT '',
+    webhook TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.notify_bindings (
+    group_id TEXT NOT NULL, event_type TEXT NOT NULL, PRIMARY KEY (group_id, event_type)
+);
+CREATE TABLE IF NOT EXISTS proj.notify_logs (
+    log_id TEXT PRIMARY KEY, notification_id BIGINT NOT NULL, group_id TEXT NOT NULL, event_type TEXT NOT NULL,
+    level TEXT NOT NULL, digest BOOLEAN NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, sent_at TIMESTAMPTZ NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON proj.notify_groups, proj.notify_bindings TO equi_app;
+GRANT SELECT, INSERT ON proj.notify_logs TO equi_app;
+
+INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_balance, auxiliary) VALUES
+ ('LoanPayable','2501','长期借款','liability','credit','债权人'),
+ ('InterestPayable','2232','应付利息','liability','credit','债权人'),
+ ('InterestExpense','5603-INT','财务费用-利息支出','pl_expense','debit','债权人'),
+ ('IncomeTaxExpense','5801','所得税费用','pl_expense','debit','')
+ON CONFLICT (account_key) DO NOTHING;

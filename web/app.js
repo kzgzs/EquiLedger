@@ -56,6 +56,10 @@ const EVENT_CN = {
   FixedAssetAcquired: '固定资产购置', FixedAssetDepreciationRun: '月度折旧计提', FixedAssetDisposed: '固定资产处置',
   MaterialDefined: '物料建档', WarehouseDefined: '仓库建档', StockReceived: '入库', StockIssued: '出库', StockCounted: '盘点',
   EquipmentRegistered: '设备登记', ProductionOrderCreated: '生产订单下达', ProductionCompleted: '完工入库',
+  PurchaseRequested: '采购申请', PurchaseApproved: '采购审批', PurchaseOrderCreated: '采购下单', PurchaseDelivered: '供应商交货',
+  PurchaseInspected: '验收入库', PurchasePaymentApproved: '付款审批', PurchasePaid: '采购支付',
+  LoanReceived: '借款到账', LoanInterestAccrued: '利息计提', LoanRepaid: '还本付息',
+  TaxReturnFiled: '纳税申报', TaxPaid: '税款缴纳', NotifyGroupConfigured: '群通知配置',
   CompanyInfoChanged: '公司信息变更', OperatorHandover: '操作员移交', TodoCompleted: '待办办结', AccountAdded: '新增成员账号',
   EvidenceUploaded: '依据上传', SecurityAlert: '安全告警', AccountStatusChanged: '账号启停', LegalEntryAdded: '法务库新增条目'
 };
@@ -198,7 +202,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -316,9 +320,10 @@ const RENDER = {
   },
   async fin() {
     const p = ($('finPeriod') && $('finPeriod').value) || new Date().toISOString().slice(0, 7);
-    const [vo, rp, tb, ap] = await Promise.all([
+    const [vo, rp, tb, ap, tx, tr] = await Promise.all([
       api('/api/vouchers?period=' + encodeURIComponent(p)), api('/api/reports?period=' + encodeURIComponent(p)),
-      api('/api/trial-balance?period=' + encodeURIComponent(p)), api('/api/arap')]);
+      api('/api/trial-balance?period=' + encodeURIComponent(p)), api('/api/arap'),
+      api('/api/tax-return?period=' + encodeURIComponent(p)), api('/api/tax-returns')]);
     const bs = rp.balanceSheet, inc = rp.income, cf = rp.cashFlow;
     const balTable = (arr) => table([['code', '科目码'], ['name', '科目'], ['balance', '余额']], arr, { balance: money });
     let h = `<h2>财务会计（科目·凭证·报表·往来）</h2>
@@ -345,18 +350,43 @@ const RENDER = {
     <h3>应收应付台账</h3>
     <h4>应收（账龄）</h4>${table([['orderId', '订单'], ['customer', '客户'], ['balance', '未收'], ['aging', '账龄']], ap.receivables, { balance: money })}
     <h4>应付</h4>${table([['kind', '类别'], ['ref', '引用'], ['amount', '金额']], ap.payables, { amount: money })}`;
+    h += `<h3>纳税申报草稿（${esc(p)}，账本自动归集）</h3>` + table([['kind', '税种'], ['payable', '应纳税额']],
+      [{ kind: '增值税', payable: tx.vat.payable }, { kind: '附加税费', payable: tx.surcharge.payable }, { kind: '企业所得税（标准税率草稿）', payable: tx.cit.payable }, { kind: '个税代扣', payable: tx.iit.payable }], { payable: money })
+      + `<p class="hint">增值税销项 ${money(tx.vat.output)} − 进项 ${money(tx.vat.input)}；附加=应纳增值税×12%；所得税=利润 ${money(tx.cit.profit)}×25%（小微优惠另行适用）；个税=工资代扣合计。申报走 TaxFiling 决议（TaxReturnFiled），缴纳走 TaxPaid。</p>`
+      + `<h3>已申报/已缴纳</h3>` + table([['period', '期间'], ['kind', '税种'], ['amount', '金额'], ['status', '状态']], tr, { amount: money });
     $('tabBody').innerHTML = h;
   },
   async erp() {
     const [assets, stock, eq, prod, plan] = await Promise.all([api('/api/assets'), api('/api/stock'), api('/api/equipment'), api('/api/production'), api('/api/resource-plan')]);
     let h = `<h2>企业资源（第四体系）</h2><p class="muted">固资卡片+按月自动折旧 · 物料/库存/仓储（移动加权）· 设备/生产订单 · MRP 净需求与设备负荷。入库/出库/领料/完工一次提交同时落资源账+会计分录+治理留痕；折旧由系统月底自动计提（EQUI_DEPR_AUTO=0 可关）。</p>
-    <h3>固定资产卡片</h3>` + table(['资产', '名称', '原值', '累计折旧', '净值', '折旧月数', '部门', '状态'], assets, a => [a.assetId, a.name, money(a.cost), money(a.accumulated), money(a.net), a.lifeMonths, a.department, a.status]);
-    h += `<h3>库存余额（低于安全库存标⚠）</h3>` + table(['物料', '名称', '仓库', '数量', '均价', '金额', '安全库存'], stock.balances, b => [b.materialId, b.name, b.warehouse, b.qty, b.avgCost, money(b.value), b.belowSafety ? '⚠ ' + b.safetyStock : b.safetyStock]);
-    h += `<h3>最近出入库/盘点流水</h3>` + table(['流水', '物料', '仓库', '方向', '数量', '金额', '摘要'], stock.moves, m => [m.moveId, m.materialId, m.warehouse, m.direction, m.qty, money(m.amount), m.memo]);
-    h += `<h3>设备</h3>` + table(['设备', '名称', '类型', '位置', '状态', '日产能', '关联资产'], eq, e => [e.equipId, e.name, e.type, e.location, e.status, e.capacityPerDay, e.linkedAssetId]);
-    h += `<h3>生产订单</h3>` + table(['订单', '产品', '计划', '完工', '设备', '状态'], prod, p => [p.orderNo, p.product, p.qty, p.completed, p.equipmentId, p.status]);
-    h += `<h3>资源计划（MRP 净需求）</h3>` + table(['物料', '名称', '毛需求', '在库', '净需求', '建议采购'], plan.materialRequirements, r => [r.materialId, r.name, r.gross, r.onHand, r.net, r.suggestPurchase]);
-    h += `<h3>设备负荷</h3>` + table(['设备', '名称', '待产数量', '日产能', '预计天数'], plan.equipmentLoad, l => [l.equipId, l.name, l.openQty, l.capacityPerDay, l.estimatedDays]);
+    <h3>固定资产卡片</h3>` + table([['assetId', '资产'], ['name', '名称'], ['cost', '原值'], ['accumulated', '累计折旧'], ['net', '净值'], ['lifeMonths', '折旧月数'], ['department', '部门'], ['status', '状态']], assets, { cost: money, accumulated: money, net: money });
+    h += `<h3>库存余额（低于安全库存标⚠）</h3>` + table([['materialId', '物料'], ['name', '名称'], ['warehouse', '仓库'], ['qty', '数量'], ['avgCost', '均价'], ['value', '金额'], ['safetyStock', '安全库存'], ['belowSafety', '低于安全']], stock.balances, { avgCost: money, value: money, belowSafety: v => v ? '⚠ 是' : '' });
+    h += `<h3>最近出入库/盘点流水</h3>` + table([['moveId', '流水'], ['materialId', '物料'], ['warehouse', '仓库'], ['direction', '方向'], ['qty', '数量'], ['amount', '金额'], ['memo', '摘要']], stock.moves, { amount: money });
+    h += `<h3>设备</h3>` + table([['equipId', '设备'], ['name', '名称'], ['type', '类型'], ['location', '位置'], ['status', '状态'], ['capacityPerDay', '日产能'], ['linkedAssetId', '关联资产']], eq);
+    h += `<h3>生产订单</h3>` + table([['orderNo', '订单'], ['product', '产品'], ['qty', '计划'], ['completed', '完工'], ['equipmentId', '设备'], ['status', '状态']], prod);
+    h += `<h3>资源计划（MRP 净需求）</h3>` + table([['materialId', '物料'], ['name', '名称'], ['gross', '毛需求'], ['onHand', '在库'], ['net', '净需求'], ['suggestPurchase', '建议采购']], plan.materialRequirements);
+    h += `<h3>设备负荷</h3>` + table([['equipId', '设备'], ['name', '名称'], ['openQty', '待产数量'], ['capacityPerDay', '日产能'], ['estimatedDays', '预计天数']], plan.equipmentLoad);
+    $('tabBody').innerHTML = h;
+  },
+  async scm() {
+    const [pu, ln] = await Promise.all([api('/api/purchase'), api('/api/loans')]);
+    let h = `<h2>采购全链路（八步贯通）</h2><p class="muted">申请→审批决议→下单→交货→验收入库（自动库存+应付+进项税）→付款审批决议→支付（银行回单留痕）。未批准不得下单、未验收不得付款、超付/重复支付被守卫拦截。</p>
+    <h3>采购申请</h3>` + table([['req_no', '申请'], ['department', '部门'], ['status', '状态'], ['reason', '事由']], pu.requests);
+    h += `<h3>采购订单</h3>` + table([['po_no', '订单'], ['req_no', '申请'], ['supplier', '供应商'], ['status', '状态'], ['paid_amount', '已付']], pu.orders, { paid_amount: money });
+    h += `<h3>交货单</h3>` + table([['delivery_no', '交货单'], ['po_no', '订单'], ['delivered_date', '交货日期']], pu.deliveries);
+    h += `<h3>验收单</h3>` + table([['inspection_no', '验收'], ['po_no', '订单'], ['inspector', '验收人'], ['accepted', '合格'], ['rejected', '拒收']], pu.inspections);
+    h += `<h3>支付记录</h3>` + table([['pay_id', '支付'], ['po_no', '订单'], ['amount', '金额'], ['receipt_hash', '回单哈希']], pu.payments, { amount: money });
+    h += `<h2>借款与还本付息</h2><p class="muted">借款到账走 Loan 决议（筹资现金流+负债同步）；利息按月计提=剩余本金×年利率÷12（守卫校验一致）；还本付息走 LoanRepayment 决议，结清自动关闭。</p>` + table([['loan_id', '借款'], ['lender', '债权人'], ['principal', '本金'], ['annual_rate', '年利率'], ['term_months', '期数'], ['outstanding_principal', '剩余本金'], ['accrued_interest', '计提未付利息'], ['paid_interest', '已付利息'], ['status', '状态']], ln.loans, { principal: money, outstanding_principal: money, accrued_interest: money, paid_interest: money });
+    h += `<h3>利息计提明细</h3>` + table([['loan_id', '借款'], ['period', '期间'], ['amount', '利息']], ln.interest, { amount: money });
+    $('tabBody').innerHTML = h;
+  },
+  async groups() {
+    const [g, logs] = await Promise.all([api('/api/notify-groups'), api('/api/notify-logs')]);
+    const KC = { company: '公司群', board: '董事会群', shareholder: '股东群', supervisor: '监事群', department: '部门群', staff: '员工群' };
+    let h = `<h2>群通知治理</h2><p class="msg warn">${esc(g.warning)}</p>
+    <p class="muted">每群独立设置：未绑定事件不推送（默认拒绝）；同一事件按群类型生成不同模板；发送前系统强制数据分级+字段过滤+接收范围检查；高敏感（工资账本/个人薪酬/股权转让对价/涉密合同）仅推摘要+授权系统内查看。群配置变更走 NotifyPolicy 决议。出口为企业微信/钉钉/飞书群机器人 webhook，不自建群聊。</p>
+    <h3>群组与绑定</h3>` + table([['groupId', '群'], ['name', '名称'], ['kind', '类型'], ['department', '部门'], ['enabled', '启用'], ['webhookMasked', 'Webhook(掩码)'], ['bindings', '绑定事件']], g.groups, { enabled: v => v ? '是' : '否', kind: v => KC[v] || v, bindings: v => (v || []).map(x => EVENT_CN[x] || x).join('、') });
+    h += `<h3>推送留痕（最近100）</h3>` + table([['log_id', '留痕'], ['group_id', '群'], ['event_type', '事件'], ['level', '分级'], ['digest', '摘要模式'], ['status', '状态'], ['sent_at', '时间']], logs, { event_type: v => EVENT_CN[v] || v, digest: v => v ? '是' : '否' });
     $('tabBody').innerHTML = h;
   },
   async contract() {
@@ -638,6 +668,19 @@ const TEMPLATES = {
   EquipmentRegistered: { equipId: 'EQ1', name: '切割机', type: '加工', location: '车间', status: 'Idle', capacityPerDay: 5, linkedAssetId: '' },
   ProductionOrderCreated: { orderNo: 'PO-1', productMaterialId: 'P1', qty: 10, bom: [{ materialId: 'M1', qtyPer: 2 }], equipmentId: 'EQ1', plannedStart: '2026-11-01', plannedEnd: '2026-11-30' },
   ProductionCompleted: { orderNo: 'PO-1', completedQty: 10, warehouse: 'WH1' },
+  PurchaseRequested: { reqNo: 'PR-1', department: '生产部', items: [{ materialId: 'M1', qty: 100 }], reason: '生产备料' },
+  PurchaseApproved: { reqNo: 'PR-1', approvedAmount: 1200 },
+  PurchaseOrderCreated: { poNo: 'PO-B1', reqNo: 'PR-1', supplier: '供应商A', items: [{ materialId: 'M1', qty: 100, unitPrice: 10, taxRate: 0.13 }], expectedDate: '2026-12-10' },
+  PurchaseDelivered: { deliveryNo: 'DL-1', poNo: 'PO-B1', items: [{ materialId: 'M1', qty: 100 }], deliveredDate: '2026-12-08' },
+  PurchaseInspected: { inspectionNo: 'IN-1', deliveryNo: 'DL-1', poNo: 'PO-B1', warehouse: 'WH1', inspector: '操建国', accepted: [{ materialId: 'M1', qty: 100, unitPrice: 10, taxRate: 0.13 }], rejected: [] },
+  PurchasePaymentApproved: { poNo: 'PO-B1', amount: 1130 },
+  PurchasePaid: { poNo: 'PO-B1', amount: 1130, receiptHash: '回单哈希' },
+  LoanReceived: { loanId: 'LN-1', lender: '某银行', principal: 100000, annualRate: 0.06, termMonths: 12, startDate: '2026-11-01' },
+  LoanInterestAccrued: { loanId: 'LN-1', period: '2026-11', amount: 500 },
+  LoanRepaid: { loanId: 'LN-1', principalPart: 20000, interestPart: 500 },
+  TaxReturnFiled: { period: '2026-11', kind: 'VAT', amount: 0, detail: {} },
+  TaxPaid: { period: '2026-11', kind: 'VAT', amount: 0 },
+  NotifyGroupConfigured: { groupId: 'G-BOARD', name: '董事会群', kind: 'board', department: '', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=示例', enabled: true, bindings: ['ResolutionRecorded', 'PurchasePaymentApproved', 'LoanRepaid', 'PeriodClosed'] },
   BonusGranted: { employeeId: 'e1', amount: 2000, reason: '月度突出贡献', period: '2026-11' },
   EmployeeLeft: { employeeId: 'e1', leaveDate: '2026-11-30', reason: 'MutualTermination', remainingLeaveDays: 5, selfConfirmed: true },
   ShareSubscription: { partyId: 'carol', partyName: '股东丙', subscribed: 100000, targetRatio: 0, contractId: 'CT-002' },

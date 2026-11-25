@@ -372,6 +372,88 @@ public static class Endpoints
             return Results.Json(new { materialRequirements = reqs, equipmentLoad = load });
         });
 
+        // ---------- 第二体系贯通：采购链 / 借款 / 纳税申报 ----------
+        app.MapGet("/api/purchase", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(new
+            {
+                requests = JRows(await conn.Rows("SELECT req_no,department,items,reason,status FROM proj.purchase_requests ORDER BY req_no")),
+                orders = JRows(await conn.Rows("SELECT po_no,req_no,supplier,items,status,paid_amount FROM proj.purchase_orders ORDER BY po_no")),
+                deliveries = JRows(await conn.Rows("SELECT delivery_no,po_no,items,delivered_date FROM proj.purchase_deliveries ORDER BY delivery_no")),
+                inspections = JRows(await conn.Rows("SELECT inspection_no,po_no,accepted,rejected,inspector FROM proj.purchase_inspections ORDER BY inspection_no")),
+                payments = JRows(await conn.Rows("SELECT pay_id,po_no,amount,receipt_hash FROM proj.purchase_payments ORDER BY pay_id"))
+            });
+        });
+        app.MapGet("/api/loans", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(new
+            {
+                loans = JRows(await conn.Rows("SELECT loan_id,lender,principal,annual_rate,term_months,outstanding_principal,accrued_interest,paid_interest,status FROM proj.loans ORDER BY loan_id")),
+                interest = JRows(await conn.Rows("SELECT loan_id,period,amount FROM proj.loan_interest ORDER BY loan_id,period"))
+            });
+        });
+        app.MapGet("/api/tax-returns", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT return_id,period,kind,amount,status FROM proj.tax_returns ORDER BY period,kind")));
+        });
+        app.MapGet("/api/tax-return", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var period = req.Query["period"].ToString();
+            if (string.IsNullOrEmpty(period)) period = DateTimeOffset.UtcNow.ToString("yyyy-MM");
+            var output = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(l.credit),0) FROM proj.ledger l JOIN events.event_log e ON e.event_id=l.source_event_id WHERE l.account='TaxPayable' AND l.period=@p AND e.event_type IN ('RevenueRecorded','SalesOrderConfirmed')", ("p", period)));
+            var input = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(l.debit),0) FROM proj.ledger l JOIN events.event_log e ON e.event_id=l.source_event_id WHERE l.account='TaxPayable' AND l.period=@p AND e.event_type='PurchaseInspected'", ("p", period)));
+            var vat = Math.Max(0, output - input);
+            var profit = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(CASE WHEN ch.category='pl_revenue' THEN l.credit-l.debit WHEN ch.category='pl_expense' AND l.account<>'IncomeTaxExpense' THEN l.debit-l.credit ELSE 0 END),0) FROM proj.ledger l JOIN proj.chart_of_accounts ch ON ch.account_key=l.account WHERE l.period=@p", ("p", period)));
+            var iit = 0m;
+            foreach (var r in await conn.Rows("SELECT totals FROM proj.payroll_runs WHERE period=@p", ("p", period)))
+                iit += decimal.TryParse(Pg.J(r["totals"])["iit"]?.ToString(), out var v) ? v : 0;
+            return Results.Json(new
+            {
+                period,
+                vat = new { output, input, payable = vat },
+                surcharge = new { @base = vat, rate = 0.12m, payable = Math.Round(vat * 0.12m, 2) },
+                cit = new { profit, rate = 0.25m, payable = Math.Round(Math.Max(0, profit) * 0.25m, 2), note = "小微企业优惠税率按现行政策另行适用，本表为标准税率草稿" },
+                iit = new { payable = iit }
+            });
+        });
+
+        // ---------- 群通知治理 ----------
+        app.MapGet("/api/notify-groups", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var gs = await conn.Rows("SELECT group_id,name,kind,department,webhook,enabled FROM proj.notify_groups ORDER BY group_id");
+            var bs = await conn.Rows("SELECT group_id,event_type FROM proj.notify_bindings ORDER BY group_id,event_type");
+            var arr = gs.Select(g => new JsonObject
+            {
+                ["groupId"] = Pg.S(g["group_id"]), ["name"] = Pg.S(g["name"]), ["kind"] = Pg.S(g["kind"]),
+                ["department"] = Pg.S(g["department"]), ["enabled"] = (bool)g["enabled"]!,
+                ["webhookMasked"] = Pg.S(g["webhook"]).Length > 24 ? Pg.S(g["webhook"])[..24] + "…" : Pg.S(g["webhook"]),
+                ["bindings"] = new JsonArray(bs.Where(b => Pg.S(b["group_id"]) == Pg.S(g["group_id"])).Select(b => (JsonNode)Pg.S(b["event_type"])).ToArray())
+            }).ToArray();
+            return Results.Json(new { groups = arr, kinds = EquiLedger.Engine.NotifyPolicy.GroupKinds, warning = "群消息撤回不等于数据收回；高敏感事件仅推送摘要，明细授权登录系统查看；任何群不接收完整工资账本。" });
+        });
+        app.MapGet("/api/notify-logs", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT log_id,group_id,event_type,level,digest,status,sent_at FROM proj.notify_logs ORDER BY sent_at DESC LIMIT 100")));
+        });
+
         app.MapGet("/api/employees", async (HttpRequest req) =>
         {
             var c = await Auth(req, db);

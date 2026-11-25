@@ -24,7 +24,8 @@ public static class Guard
         "RuleActivated", "ShareSubscription", "ShareTransfer", "ShareExit", "DividendApproved",
         "BonusGranted", "ModuleSwitchChanged", "InvestmentReceived", "OperatorHandover",
         "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade",
-        "FixedAssetDisposed", "ProductionOrderCreated"
+        "FixedAssetDisposed", "ProductionOrderCreated",
+        "PurchaseApproved", "PurchasePaymentApproved", "LoanReceived", "LoanRepaid", "TaxReturnFiled", "NotifyGroupConfigured"
     };
     private static readonly HashSet<string> RoutineOrResolution = new()
     {
@@ -35,7 +36,8 @@ public static class Guard
     {
         "CapitalPaidIn", "DividendPaid", "CollectionReceived", "RevenueRecorded",
         "PayrollRun", "BankFlowImported", "EvidenceUploaded", "RelationDeclared", "InvestorQualified", "ShareholderDeceased", "TodoCompleted", "LegalEntryAdded", "InvestmentReturnReceived", "PayrollPaid",
-        "FixedAssetAcquired", "FixedAssetDepreciationRun", "StockReceived", "StockIssued", "StockCounted", "MaterialDefined", "WarehouseDefined", "EquipmentRegistered", "ProductionCompleted"
+        "FixedAssetAcquired", "FixedAssetDepreciationRun", "StockReceived", "StockIssued", "StockCounted", "MaterialDefined", "WarehouseDefined", "EquipmentRegistered", "ProductionCompleted",
+        "PurchaseRequested", "PurchaseOrderCreated", "PurchaseDelivered", "PurchaseInspected", "PurchasePaid", "LoanInterestAccrued", "TaxPaid"
     };
     private static readonly Dictionary<string, string> RoutineCategory = new()
     {
@@ -54,6 +56,12 @@ public static class Guard
         ["InvestmentMade"] = new[] { "ExternalInvestment" },
         ["FixedAssetDisposed"] = new[] { "AssetDisposal" },
         ["ProductionOrderCreated"] = new[] { "ProductionPlan" },
+        ["PurchaseApproved"] = new[] { "PurchasePlan" },
+        ["PurchasePaymentApproved"] = new[] { "PurchasePayment" },
+        ["LoanReceived"] = new[] { "Loan" },
+        ["LoanRepaid"] = new[] { "LoanRepayment" },
+        ["TaxReturnFiled"] = new[] { "TaxFiling" },
+        ["NotifyGroupConfigured"] = new[] { "NotifyPolicy" },
         ["OperatorHandover"] = new[] { "OperatorHandover" },
         ["CorrectionRecorded"] = new[] { "Correction" },
         ["PeriodClosed"] = new[] { "PeriodClose" },
@@ -243,6 +251,127 @@ public static class Guard
                         var have = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(qty),0) FROM proj.stock_balances WHERE material_id=@m", ("m", bl["materialId"]!.GetValue<string>())));
                         if (have < need) throw new GuardException("InsufficientStock", $"物料 {bl["materialId"]} 不足以满足 BOM 领料");
                     }
+                    break;
+                }
+            case "PurchaseRequested":
+                {
+                    var items = p["items"] as JsonArray;
+                    if (items is null || items.Count == 0) throw new GuardException("BadParams", "采购明细不能为空");
+                    foreach (var it in items) if (Convert.ToDecimal(it!["qty"]!.ToString()) <= 0) throw new GuardException("BadParams", "采购数量须为正");
+                    break;
+                }
+            case "PurchaseApproved":
+                {
+                    var rq = await conn.Rows("SELECT status FROM proj.purchase_requests WHERE req_no=@r", ("r", Ps("reqNo")));
+                    if (rq.Count == 0) throw new GuardException("NoRequest", "采购申请不存在");
+                    if (Pg.S(rq[0]["status"]) != "Requested") throw new GuardException("AlreadyApproved", "申请已审批");
+                    if (Pd("approvedAmount") <= 0) throw new GuardException("BadParams", "授权额度须为正");
+                    break;
+                }
+            case "PurchaseOrderCreated":
+                {
+                    var rq = await conn.Rows("SELECT status FROM proj.purchase_requests WHERE req_no=@r", ("r", Ps("reqNo")));
+                    if (rq.Count == 0 || Pg.S(rq[0]["status"]) != "Approved") throw new GuardException("NotApproved", "采购申请未经决议批准，不得下单");
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.purchase_orders WHERE po_no=@p", ("p", Ps("poNo")))) > 0) throw new GuardException("Duplicate", "订单号已存在");
+                    var items = p["items"] as JsonArray;
+                    if (items is null || items.Count == 0) throw new GuardException("BadParams", "订单明细不能为空");
+                    break;
+                }
+            case "PurchaseDelivered":
+                {
+                    var po = await conn.Rows("SELECT status FROM proj.purchase_orders WHERE po_no=@p", ("p", Ps("poNo")));
+                    if (po.Count == 0) throw new GuardException("NoOrder", "采购订单不存在");
+                    if (Pg.S(po[0]["status"]) != "Open") throw new GuardException("OrderState", "订单状态不允许交货");
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.purchase_deliveries WHERE delivery_no=@d", ("d", Ps("deliveryNo")))) > 0) throw new GuardException("Duplicate", "交货单号已存在");
+                    break;
+                }
+            case "PurchaseInspected":
+                {
+                    var dl = await conn.Rows("SELECT items FROM proj.purchase_deliveries WHERE delivery_no=@d", ("d", Ps("deliveryNo")));
+                    if (dl.Count == 0) throw new GuardException("NoDelivery", "交货单不存在");
+                    if (string.IsNullOrEmpty(Ps("inspector"))) throw new GuardException("BadParams", "验收人必填");
+                    var delivered = new Dictionary<string, decimal>();
+                    foreach (var it in Pg.J(dl[0]["items"]) as JsonArray ?? new JsonArray())
+                        delivered[it!["materialId"]!.GetValue<string>()] = Convert.ToDecimal(it["qty"]!.ToString());
+                    foreach (var key in new[] { "accepted", "rejected" })
+                        foreach (var it in p[key] as JsonArray ?? new JsonArray())
+                        {
+                            var mid = it!["materialId"]!.GetValue<string>();
+                            var q = Convert.ToDecimal(it["qty"]!.ToString());
+                            if (q < 0) throw new GuardException("BadParams", "验收数量非负");
+                            delivered[mid] = (delivered.TryGetValue(mid, out var left) ? left : 0) - q;
+                            if (delivered[mid] < 0) throw new GuardException("OverAccepted", $"验收+拒收超过交货数量：{mid}");
+                        }
+                    break;
+                }
+            case "PurchasePaymentApproved":
+            case "PurchasePaid":
+                {
+                    var po = await conn.Rows("SELECT status,paid_amount FROM proj.purchase_orders WHERE po_no=@p", ("p", Ps("poNo")));
+                    if (po.Count == 0) throw new GuardException("NoOrder", "采购订单不存在");
+                    if (t == "PurchasePaid")
+                    {
+                        if (string.IsNullOrEmpty(d.ResolutionNo)) throw new GuardException("NeedResolution", "采购支付必须挂付款审批决议");
+                        if (Pg.S(po[0]["status"]) == "Closed") throw new GuardException("OrderClosed", "订单已结清");
+                    }
+                    else if (Pg.S(po[0]["status"]) != "Inspected") throw new GuardException("OrderState", "未验收不得审批付款");
+                    decimal acceptedValue = 0;
+                    var ins = await conn.Rows("SELECT accepted FROM proj.purchase_inspections WHERE po_no=@p", ("p", Ps("poNo")));
+                    foreach (var i in ins)
+                        foreach (var it in Pg.J(i["accepted"]) as JsonArray ?? new JsonArray())
+                        {
+                            var q = Convert.ToDecimal(it!["qty"]!.ToString()); var u = Convert.ToDecimal(it["unitPrice"]!.ToString());
+                            var r = it["taxRate"] is null ? 0m : Convert.ToDecimal(it["taxRate"]!.ToString());
+                            acceptedValue += Math.Round(q * u, 2) + Math.Round(Math.Round(q * u, 2) * r, 2);
+                        }
+                    var outstanding = acceptedValue - Pg.D(po[0]["paid_amount"]);
+                    if (Pd("amount") <= 0 || Pd("amount") > outstanding) throw new GuardException("AmountExceed", $"支付金额须∈(0, 未付应付 {outstanding}]");
+                    break;
+                }
+            case "LoanReceived":
+                if (Pd("principal") <= 0 || Pd("annualRate") < 0 || Pd("termMonths") <= 0) throw new GuardException("BadParams", "本金/期数须为正、利率非负");
+                if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.loans WHERE loan_id=@i", ("i", Ps("loanId")))) > 0) throw new GuardException("Duplicate", "借款编号已存在");
+                break;
+            case "LoanInterestAccrued":
+                {
+                    var ln = await conn.Rows("SELECT status,outstanding_principal,annual_rate FROM proj.loans WHERE loan_id=@i", ("i", Ps("loanId")));
+                    if (ln.Count == 0) throw new GuardException("NoLoan", "借款不存在");
+                    if (Pg.S(ln[0]["status"]) != "Active") throw new GuardException("LoanClosed", "借款已结清");
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.loan_interest WHERE loan_id=@i AND period=@p", ("i", Ps("loanId")), ("p", Ps("period")))) > 0) throw new GuardException("AlreadyAccrued", "该期利息已计提");
+                    var expect = Math.Round(Pg.D(ln[0]["outstanding_principal"]) * Pg.D(ln[0]["annual_rate"]) / 12, 2);
+                    if (Pd("amount") != expect) throw new GuardException("AmountMismatch", $"利息须等于 剩余本金×年利率÷12 = {expect}");
+                    break;
+                }
+            case "LoanRepaid":
+                {
+                    var ln = await conn.Rows("SELECT outstanding_principal,accrued_interest FROM proj.loans WHERE loan_id=@i", ("i", Ps("loanId")));
+                    if (ln.Count == 0) throw new GuardException("NoLoan", "借款不存在");
+                    var pp = Pd("principalPart"); var ip = Pd("interestPart");
+                    if (pp < 0 || ip < 0 || pp + ip <= 0) throw new GuardException("BadParams", "还本付息金额非负且合计为正");
+                    if (pp > Pg.D(ln[0]["outstanding_principal"])) throw new GuardException("AmountExceed", "还本超过剩余本金");
+                    if (ip > Pg.D(ln[0]["accrued_interest"])) throw new GuardException("AmountExceed", "付息超过已计提未付利息");
+                    break;
+                }
+            case "TaxReturnFiled":
+                {
+                    if (Ps("kind") is not ("VAT" or "Surcharge" or "CIT" or "IIT")) throw new GuardException("BadParams", "税种须为 VAT/Surcharge/CIT/IIT");
+                    if (Pd("amount") < 0) throw new GuardException("BadParams", "税额非负");
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.tax_returns WHERE period=@p AND kind=@k", ("p", Ps("period")), ("k", Ps("kind")))) > 0) throw new GuardException("AlreadyFiled", "该期该税种已申报");
+                    break;
+                }
+            case "TaxPaid":
+                {
+                    var tr = await conn.Rows("SELECT status,amount FROM proj.tax_returns WHERE period=@p AND kind=@k", ("p", Ps("period")), ("k", Ps("kind")));
+                    if (tr.Count == 0) throw new GuardException("NoReturn", "先申报后缴纳");
+                    if (Pg.S(tr[0]["status"]) != "Filed") throw new GuardException("AlreadyPaid", "已缴纳");
+                    if (Pd("amount") != Pg.D(tr[0]["amount"])) throw new GuardException("AmountMismatch", "缴纳金额须等于申报额");
+                    break;
+                }
+            case "NotifyGroupConfigured":
+                {
+                    if (!EquiLedger.Engine.NotifyPolicy.GroupKinds.Contains(Ps("kind"))) throw new GuardException("BadParams", "群类型须为 company/board/shareholder/supervisor/department/staff");
+                    if (!Ps("webhook").StartsWith("https://")) throw new GuardException("BadParams", "webhook 须为 https 地址（企业微信/钉钉/飞书群机器人）");
+                    if (p["bindings"] is not JsonArray) throw new GuardException("BadParams", "bindings 须为事件类型数组");
                     break;
                 }
             case "ShareSubscription":

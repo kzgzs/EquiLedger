@@ -20,6 +20,7 @@ public class Verifier
         "company", "parties", "relations", "resolutions", "rule_versions", "cap_versions", "cap_positions",
         "ledger", "period_locks", "calc_results", "dividend_plans", "employees", "payroll_runs", "payroll_lines",
         "fixed_assets", "depreciation_runs", "materials", "warehouses", "stock_balances", "stock_moves", "equipment", "production_orders",
+        "purchase_requests", "purchase_orders", "purchase_deliveries", "purchase_inspections", "purchase_payments", "loans", "loan_interest", "tax_returns", "notify_groups", "notify_bindings",
         "contracts", "module_states", "todos", "bank_flows", "whitelist_accounts", "investors",
         "evidence_files", "routine_usage", "impact_lists", "sales_orders", "commissions", "bonuses", "access_logs", "legal_library", "external_investments"
     };
