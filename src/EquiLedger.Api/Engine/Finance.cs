@@ -37,6 +37,7 @@ public static class Finance
             switch (Pg.S(ch["category"]))
             {
                 case "asset": a += bal; assets.Add(Line(ch, bal)); break;
+                case "cost": a += bal; assets.Add(Line(ch, bal)); break; // 生产成本余额=在产品，列资产侧
                 case "liability": l += -bal; liabs.Add(Line(ch, -bal)); break;
                 case "equity": e += -bal; eq.Add(Line(ch, -bal)); break;
                 case "pl_revenue": pl += t.c - t.d; break;

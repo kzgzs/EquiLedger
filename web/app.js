@@ -53,6 +53,9 @@ const EVENT_CN = {
   PeriodClosed: '期间结账', CorrectionRecorded: '红字更正', ModuleSwitchChanged: '模块开关变更',
   InvestorQualified: '合格投资者认定', InvestmentReceived: '投资款到账', RelationDeclared: '关联关系申报',
   InvestmentMade: '对外投资', InvestmentReturnReceived: '投资回报到账', PayrollPaid: '工资发放确认',
+  FixedAssetAcquired: '固定资产购置', FixedAssetDepreciationRun: '月度折旧计提', FixedAssetDisposed: '固定资产处置',
+  MaterialDefined: '物料建档', WarehouseDefined: '仓库建档', StockReceived: '入库', StockIssued: '出库', StockCounted: '盘点',
+  EquipmentRegistered: '设备登记', ProductionOrderCreated: '生产订单下达', ProductionCompleted: '完工入库',
   CompanyInfoChanged: '公司信息变更', OperatorHandover: '操作员移交', TodoCompleted: '待办办结', AccountAdded: '新增成员账号',
   EvidenceUploaded: '依据上传', SecurityAlert: '安全告警', AccountStatusChanged: '账号启停', LegalEntryAdded: '法务库新增条目'
 };
@@ -195,7 +198,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['fin', '财务'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -342,6 +345,18 @@ const RENDER = {
     <h3>应收应付台账</h3>
     <h4>应收（账龄）</h4>${table([['orderId', '订单'], ['customer', '客户'], ['balance', '未收'], ['aging', '账龄']], ap.receivables, { balance: money })}
     <h4>应付</h4>${table([['kind', '类别'], ['ref', '引用'], ['amount', '金额']], ap.payables, { amount: money })}`;
+    $('tabBody').innerHTML = h;
+  },
+  async erp() {
+    const [assets, stock, eq, prod, plan] = await Promise.all([api('/api/assets'), api('/api/stock'), api('/api/equipment'), api('/api/production'), api('/api/resource-plan')]);
+    let h = `<h2>企业资源（第四体系）</h2><p class="muted">固资卡片+按月自动折旧 · 物料/库存/仓储（移动加权）· 设备/生产订单 · MRP 净需求与设备负荷。入库/出库/领料/完工一次提交同时落资源账+会计分录+治理留痕；折旧由系统月底自动计提（EQUI_DEPR_AUTO=0 可关）。</p>
+    <h3>固定资产卡片</h3>` + table(['资产', '名称', '原值', '累计折旧', '净值', '折旧月数', '部门', '状态'], assets, a => [a.assetId, a.name, money(a.cost), money(a.accumulated), money(a.net), a.lifeMonths, a.department, a.status]);
+    h += `<h3>库存余额（低于安全库存标⚠）</h3>` + table(['物料', '名称', '仓库', '数量', '均价', '金额', '安全库存'], stock.balances, b => [b.materialId, b.name, b.warehouse, b.qty, b.avgCost, money(b.value), b.belowSafety ? '⚠ ' + b.safetyStock : b.safetyStock]);
+    h += `<h3>最近出入库/盘点流水</h3>` + table(['流水', '物料', '仓库', '方向', '数量', '金额', '摘要'], stock.moves, m => [m.moveId, m.materialId, m.warehouse, m.direction, m.qty, money(m.amount), m.memo]);
+    h += `<h3>设备</h3>` + table(['设备', '名称', '类型', '位置', '状态', '日产能', '关联资产'], eq, e => [e.equipId, e.name, e.type, e.location, e.status, e.capacityPerDay, e.linkedAssetId]);
+    h += `<h3>生产订单</h3>` + table(['订单', '产品', '计划', '完工', '设备', '状态'], prod, p => [p.orderNo, p.product, p.qty, p.completed, p.equipmentId, p.status]);
+    h += `<h3>资源计划（MRP 净需求）</h3>` + table(['物料', '名称', '毛需求', '在库', '净需求', '建议采购'], plan.materialRequirements, r => [r.materialId, r.name, r.gross, r.onHand, r.net, r.suggestPurchase]);
+    h += `<h3>设备负荷</h3>` + table(['设备', '名称', '待产数量', '日产能', '预计天数'], plan.equipmentLoad, l => [l.equipId, l.name, l.openQty, l.capacityPerDay, l.estimatedDays]);
     $('tabBody').innerHTML = h;
   },
   async contract() {
@@ -612,6 +627,17 @@ const TEMPLATES = {
   EmployeeHired: { employeeId: 'e1', partyId: 'e1', name: '张三', position: '工程师', hireDate: '2026-11-01', contractId: 'CT-001', gender: '男', age: 28, department: '技术部', skills: 'Java/运维', salaryType: 'Fixed', baseSalary: 8000, siStatus: '办理中', bankAccount: '6222000011112222（银行代发收款账号）', bankName: '开户行（可选）', emergencyContact: '家属电话（可选）' },
   PayrollRun: { period: '2026-11' },
   PayrollPaid: { period: '2026-11', totalAmount: 6552 },
+  FixedAssetAcquired: { assetId: 'FA-01', name: '服务器', category: '电子设备', cost: 120000, residualRate: 0, lifeMonths: 120, acquiredDate: '2026-11-01', department: '技术部', location: '机房' },
+  FixedAssetDepreciationRun: { period: '2026-11' },
+  FixedAssetDisposed: { assetId: 'FA-01', disposalDate: '2026-12-01', proceeds: 50000 },
+  MaterialDefined: { materialId: 'M1', name: '钢材', unit: '件', spec: 'Q235', category: 'raw', safetyStock: 10 },
+  WarehouseDefined: { warehouseId: 'WH1', name: '主仓', location: '一号库' },
+  StockReceived: { materialId: 'M1', warehouse: 'WH1', qty: 100, unitCost: 10, paid: false, supplier: '供应商A', memo: '采购入库' },
+  StockIssued: { materialId: 'M1', warehouse: 'WH1', qty: 30, purpose: 'sale' },
+  StockCounted: { materialId: 'M1', warehouse: 'WH1', countedQty: 68, reason: '月度盘点' },
+  EquipmentRegistered: { equipId: 'EQ1', name: '切割机', type: '加工', location: '车间', status: 'Idle', capacityPerDay: 5, linkedAssetId: '' },
+  ProductionOrderCreated: { orderNo: 'PO-1', productMaterialId: 'P1', qty: 10, bom: [{ materialId: 'M1', qtyPer: 2 }], equipmentId: 'EQ1', plannedStart: '2026-11-01', plannedEnd: '2026-11-30' },
+  ProductionCompleted: { orderNo: 'PO-1', completedQty: 10, warehouse: 'WH1' },
   BonusGranted: { employeeId: 'e1', amount: 2000, reason: '月度突出贡献', period: '2026-11' },
   EmployeeLeft: { employeeId: 'e1', leaveDate: '2026-11-30', reason: 'MutualTermination', remainingLeaveDays: 5, selfConfirmed: true },
   ShareSubscription: { partyId: 'carol', partyName: '股东丙', subscribed: 100000, targetRatio: 0, contractId: 'CT-002' },

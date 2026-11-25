@@ -305,6 +305,73 @@ public static class Endpoints
             return Results.Json(new { receivables = recv, payables = pay });
         });
 
+        // ---------- 第四体系：资源管理（固资/库存/设备/生产/资源计划） ----------
+        app.MapGet("/api/assets", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(new JsonArray((await conn.Rows("SELECT * FROM proj.fixed_assets ORDER BY asset_id")).Select(r => (JsonNode)new JsonObject
+            {
+                ["assetId"] = Pg.S(r["asset_id"]), ["name"] = Pg.S(r["name"]), ["category"] = Pg.S(r["category"]),
+                ["cost"] = Pg.D(r["cost"]), ["accumulated"] = Pg.D(r["accumulated_dep"]), ["net"] = Pg.D(r["cost"]) - Pg.D(r["accumulated_dep"]),
+                ["lifeMonths"] = Convert.ToInt32(r["life_months"]), ["residualRate"] = Pg.D(r["residual_rate"]),
+                ["department"] = Pg.S(r["department"]), ["location"] = Pg.S(r["location"]), ["status"] = Pg.S(r["status"])
+            }).ToArray()));
+        });
+        app.MapGet("/api/stock", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var bal = await conn.Rows("SELECT b.*,m.name,m.unit,m.category,m.safety_stock FROM proj.stock_balances b JOIN proj.materials m ON m.material_id=b.material_id ORDER BY b.material_id,b.warehouse");
+            var moves = await conn.Rows("SELECT * FROM proj.stock_moves ORDER BY move_id DESC LIMIT 50");
+            return Results.Json(new
+            {
+                balances = new JsonArray(bal.Select(r => (JsonNode)new JsonObject { ["materialId"] = Pg.S(r["material_id"]), ["name"] = Pg.S(r["name"]), ["warehouse"] = Pg.S(r["warehouse"]), ["qty"] = Pg.D(r["qty"]), ["avgCost"] = Pg.D(r["avg_cost"]), ["value"] = Math.Round(Pg.D(r["qty"]) * Pg.D(r["avg_cost"]), 2), ["unit"] = Pg.S(r["unit"]), ["safetyStock"] = Pg.D(r["safety_stock"]), ["belowSafety"] = Pg.D(r["qty"]) < Pg.D(r["safety_stock"]) }).ToArray()),
+                moves = new JsonArray(moves.Select(r => (JsonNode)new JsonObject { ["moveId"] = Pg.S(r["move_id"]), ["materialId"] = Pg.S(r["material_id"]), ["warehouse"] = Pg.S(r["warehouse"]), ["direction"] = Pg.S(r["direction"]), ["qty"] = Pg.D(r["qty"]), ["amount"] = Pg.D(r["amount"]), ["memo"] = Pg.S(r["memo"]) }).ToArray())
+            });
+        });
+        app.MapGet("/api/equipment", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(new JsonArray((await conn.Rows("SELECT * FROM proj.equipment ORDER BY equip_id")).Select(r => (JsonNode)new JsonObject { ["equipId"] = Pg.S(r["equip_id"]), ["name"] = Pg.S(r["name"]), ["type"] = Pg.S(r["type"]), ["location"] = Pg.S(r["location"]), ["status"] = Pg.S(r["status"]), ["capacityPerDay"] = Pg.D(r["capacity_per_day"]), ["linkedAssetId"] = Pg.S(r["linked_asset_id"]) }).ToArray()));
+        });
+        app.MapGet("/api/production", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(new JsonArray((await conn.Rows("SELECT * FROM proj.production_orders ORDER BY order_no")).Select(r => (JsonNode)new JsonObject { ["orderNo"] = Pg.S(r["order_no"]), ["product"] = Pg.S(r["product_material_id"]), ["qty"] = Pg.D(r["qty"]), ["completed"] = Pg.D(r["completed_qty"]), ["bom"] = Pg.J(r["bom"]), ["equipmentId"] = Pg.S(r["equipment_id"]), ["status"] = Pg.S(r["status"]) }).ToArray()));
+        });
+        app.MapGet("/api/resource-plan", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var orders = await conn.Rows("SELECT * FROM proj.production_orders WHERE status='Open' ORDER BY order_no");
+            var mats = await conn.Rows("SELECT m.*,COALESCE((SELECT SUM(qty) FROM proj.stock_balances b WHERE b.material_id=m.material_id),0) AS onhand FROM proj.materials m ORDER BY m.material_id");
+            var gross = new Dictionary<string, decimal>();
+            foreach (var o in orders)
+                foreach (var bl in Pg.J(o["bom"]) as JsonArray ?? new JsonArray())
+                {
+                    var mid = bl!["materialId"]!.GetValue<string>();
+                    var need = Convert.ToDecimal(bl["qtyPer"]!.ToString()) * (Pg.D(o["qty"]) - Pg.D(o["completed_qty"]));
+                    gross[mid] = (gross.TryGetValue(mid, out var g) ? g : 0) + need;
+                }
+            var reqs = mats.Where(m => gross.ContainsKey(Pg.S(m["material_id"]))).Select(m =>
+            {
+                var mid = Pg.S(m["material_id"]); var g = gross[mid]; var onhand = Convert.ToDecimal(m["onhand"]);
+                var net = Math.Max(0, g - onhand);
+                return new JsonObject { ["materialId"] = mid, ["name"] = Pg.S(m["name"]), ["gross"] = g, ["onHand"] = onhand, ["net"] = net, ["safetyStock"] = Pg.D(m["safety_stock"]), ["suggestPurchase"] = net };
+            }).ToArray();
+            var eqLoad = await conn.Rows("SELECT e.equip_id,e.name,e.capacity_per_day,COALESCE(SUM(o.qty-o.completed_qty),0) AS load FROM proj.equipment e LEFT JOIN proj.production_orders o ON o.equipment_id=e.equip_id AND o.status='Open' GROUP BY e.equip_id,e.name,e.capacity_per_day ORDER BY e.equip_id");
+            var load = eqLoad.Select(r => new JsonObject { ["equipId"] = Pg.S(r["equip_id"]), ["name"] = Pg.S(r["name"]), ["openQty"] = Convert.ToDecimal(r["load"]), ["capacityPerDay"] = Pg.D(r["capacity_per_day"]), ["estimatedDays"] = Pg.D(r["capacity_per_day"]) > 0 ? Math.Round(Convert.ToDecimal(r["load"]) / Pg.D(r["capacity_per_day"]), 1) : 0m }).ToArray();
+            return Results.Json(new { materialRequirements = reqs, equipmentLoad = load });
+        });
+
         app.MapGet("/api/employees", async (HttpRequest req) =>
         {
             var c = await Auth(req, db);

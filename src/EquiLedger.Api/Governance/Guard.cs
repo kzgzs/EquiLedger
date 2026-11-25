@@ -23,7 +23,8 @@ public static class Guard
     {
         "RuleActivated", "ShareSubscription", "ShareTransfer", "ShareExit", "DividendApproved",
         "BonusGranted", "ModuleSwitchChanged", "InvestmentReceived", "OperatorHandover",
-        "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade"
+        "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade",
+        "FixedAssetDisposed", "ProductionOrderCreated"
     };
     private static readonly HashSet<string> RoutineOrResolution = new()
     {
@@ -33,7 +34,8 @@ public static class Guard
     private static readonly HashSet<string> ExecutionOrCollection = new()
     {
         "CapitalPaidIn", "DividendPaid", "CollectionReceived", "RevenueRecorded",
-        "PayrollRun", "BankFlowImported", "EvidenceUploaded", "RelationDeclared", "InvestorQualified", "ShareholderDeceased", "TodoCompleted", "LegalEntryAdded", "InvestmentReturnReceived", "PayrollPaid"
+        "PayrollRun", "BankFlowImported", "EvidenceUploaded", "RelationDeclared", "InvestorQualified", "ShareholderDeceased", "TodoCompleted", "LegalEntryAdded", "InvestmentReturnReceived", "PayrollPaid",
+        "FixedAssetAcquired", "FixedAssetDepreciationRun", "StockReceived", "StockIssued", "StockCounted", "MaterialDefined", "WarehouseDefined", "EquipmentRegistered", "ProductionCompleted"
     };
     private static readonly Dictionary<string, string> RoutineCategory = new()
     {
@@ -50,6 +52,8 @@ public static class Guard
         ["ModuleSwitchChanged"] = new[] { "ModuleSwitch" },
         ["InvestmentReceived"] = new[] { "Financing", "CapitalIncrease" },
         ["InvestmentMade"] = new[] { "ExternalInvestment" },
+        ["FixedAssetDisposed"] = new[] { "AssetDisposal" },
+        ["ProductionOrderCreated"] = new[] { "ProductionPlan" },
         ["OperatorHandover"] = new[] { "OperatorHandover" },
         ["CorrectionRecorded"] = new[] { "Correction" },
         ["PeriodClosed"] = new[] { "PeriodClose" },
@@ -195,6 +199,50 @@ public static class Guard
                     if (Pg.S(payRuns[0]["status"]) != "Calculated") throw new GuardException("AlreadyPaid", "该期间已确认发放，不可重复确认");
                     var payNet = decimal.TryParse(Pg.J(payRuns[0]["totals"])["net"]?.ToString(), out var pn) ? pn : 0m;
                     if (Pd("totalAmount") != payNet) throw new GuardException("AmountMismatch", $"确认金额须等于实发合计 {payNet}（与银行回单一致才入链）");
+                    break;
+                }
+            case "FixedAssetAcquired":
+                if (Pd("cost") <= 0 || Pd("lifeMonths") <= 0 || Pd("residualRate") < 0 || Pd("residualRate") >= 1) throw new GuardException("BadParams", "成本/折旧月数须为正，残值率∈[0,1)");
+                if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.fixed_assets WHERE asset_id=@i", ("i", Ps("assetId")))) > 0) throw new GuardException("Duplicate", "资产卡片已存在");
+                break;
+            case "FixedAssetDepreciationRun":
+                if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.depreciation_runs WHERE period=@p", ("p", Ps("period")))) > 0) throw new GuardException("AlreadyRun", "该期间折旧已计提");
+                break;
+            case "FixedAssetDisposed":
+                {
+                    var fa = await conn.Rows("SELECT status FROM proj.fixed_assets WHERE asset_id=@i", ("i", Ps("assetId")));
+                    if (fa.Count == 0) throw new GuardException("NoAsset", "资产卡片不存在");
+                    if (Pg.S(fa[0]["status"]) == "Disposed") throw new GuardException("AlreadyDisposed", "已处置");
+                    if (Pd("proceeds") < 0) throw new GuardException("BadParams", "处置收款不能为负");
+                    break;
+                }
+            case "StockReceived":
+                if (Pd("qty") <= 0 || Pd("unitCost") < 0) throw new GuardException("BadParams", "数量须为正、单位成本非负");
+                if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.materials WHERE material_id=@i", ("i", Ps("materialId")))) == 0) throw new GuardException("NoMaterial", "物料主数据不存在");
+                break;
+            case "StockIssued":
+                {
+                    if (Pd("qty") <= 0) throw new GuardException("BadParams", "出库数量须为正");
+                    var sb = await conn.Rows("SELECT qty FROM proj.stock_balances WHERE material_id=@m AND warehouse=@w", ("m", Ps("materialId")), ("w", Ps("warehouse")));
+                    if (sb.Count == 0 || Pg.D(sb[0]["qty"]) < Pd("qty")) throw new GuardException("InsufficientStock", "库存不足");
+                    break;
+                }
+            case "StockCounted":
+                if (Pd("countedQty") < 0) throw new GuardException("BadParams", "盘点数量非负");
+                break;
+            case "ProductionCompleted":
+                {
+                    var po = await conn.Rows("SELECT status,qty,completed_qty,bom FROM proj.production_orders WHERE order_no=@o", ("o", Ps("orderNo")));
+                    if (po.Count == 0) throw new GuardException("NoOrder", "生产订单不存在");
+                    if (Pg.S(po[0]["status"]) != "Open") throw new GuardException("OrderClosed", "订单已关闭");
+                    var cq = Pd("completedQty");
+                    if (cq <= 0 || cq > Pg.D(po[0]["qty"]) - Pg.D(po[0]["completed_qty"])) throw new GuardException("BadParams", "完工数量超过订单剩余");
+                    foreach (var bl in Pg.J(po[0]["bom"]) as JsonArray ?? new JsonArray())
+                    {
+                        var need = Convert.ToDecimal(bl!["qtyPer"]!.ToString()) * cq;
+                        var have = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(qty),0) FROM proj.stock_balances WHERE material_id=@m", ("m", bl["materialId"]!.GetValue<string>())));
+                        if (have < need) throw new GuardException("InsufficientStock", $"物料 {bl["materialId"]} 不足以满足 BOM 领料");
+                    }
                     break;
                 }
             case "ShareSubscription":

@@ -133,6 +133,24 @@ public class PayrollAutoService : BackgroundService
                             }
                         }
                     }
+                    if (Environment.GetEnvironmentVariable("EQUI_DEPR_AUTO") != "0" && now.Day == day && now.Hour >= 9)
+                    {
+                        var periodD = now.ToString("yyyy-MM");
+                        await using var connD = _db.App();
+                        var depDone = Convert.ToInt64(await connD.Scalar("SELECT COUNT(*) FROM proj.depreciation_runs WHERE period=@p", ("p", periodD)));
+                        var depN = Convert.ToInt64(await connD.Scalar("SELECT COUNT(*) FROM proj.fixed_assets WHERE status='Active'"));
+                        if (depDone == 0 && depN > 0)
+                        {
+                            var dop = await connD.Scalar("SELECT username FROM proj.accounts WHERE role='Operator' AND enabled=TRUE AND frozen=FALSE ORDER BY username LIMIT 1") as string;
+                            if (dop != null)
+                            {
+                                await _store.Append(new EventStore.Draft("FixedAssetDepreciationRun", dop, null,
+                                    new JsonArray(new JsonObject { ["name"] = "系统月度自动折旧（直线法·资产卡片快照）", ["hash"] = EquiLedger.Core.HashChain.Sha256(periodD + dop) }),
+                                    new JsonObject { ["period"] = periodD, ["auto"] = true }));
+                                Console.WriteLine($"月度自动折旧已提交 {periodD}");
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"自动算薪服务异常：{ex.Message}"); }

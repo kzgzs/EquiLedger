@@ -147,7 +147,7 @@ public class ApplyCtx
 
     public async Task<decimal> NetAssets()
     {
-        var assets = Pg.D(await Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Bank','AR','FixedAsset')"));
+        var assets = Pg.D(await Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Bank','AR','Inventory','Materials','FixedAssets','ExternalInvestment')"));
         var liab = Pg.D(await Scalar("SELECT COALESCE(SUM(credit-debit),0) FROM proj.ledger WHERE account IN ('DividendPayable','TaxPayable','SIPayable','ExitPayable','LoanPayable','DividendSuspense')"));
         return assets - liab;
     }
@@ -190,6 +190,17 @@ public static partial class Projection
             case "InvestmentMade": await InvestmentMade(c); break;
             case "InvestmentReturnReceived": await InvestmentReturnReceived(c); break;
             case "PayrollPaid": await PayrollPaid(c); break;
+            case "FixedAssetAcquired": await FixedAssetAcquired(c); break;
+            case "FixedAssetDepreciationRun": await FixedAssetDepreciationRun(c); break;
+            case "FixedAssetDisposed": await FixedAssetDisposed(c); break;
+            case "MaterialDefined": await MaterialDefined(c); break;
+            case "WarehouseDefined": await WarehouseDefined(c); break;
+            case "StockReceived": await StockReceived(c); break;
+            case "StockIssued": await StockIssued(c); break;
+            case "StockCounted": await StockCounted(c); break;
+            case "EquipmentRegistered": await EquipmentRegistered(c); break;
+            case "ProductionOrderCreated": await ProductionOrderCreated(c); break;
+            case "ProductionCompleted": await ProductionCompleted(c); break;
             case "ShareTransfer": await ShareTransfer(c); break;
             case "ShareExit": await ShareExit(c); break;
             case "ShareholderDeceased": await ShareholderDeceased(c); break;

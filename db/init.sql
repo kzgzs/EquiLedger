@@ -384,3 +384,48 @@ INSERT INTO proj.chart_of_accounts(account_key,code,name,category,normal_balance
  ('ExitGainLoss','5711','营业外支出-退股差额','pl_expense','debit','股东')
 ON CONFLICT (account_key) DO NOTHING;
 GRANT SELECT ON proj.chart_of_accounts TO equi_app;
+
+-- ============ 第四体系：企业资源管理（固资/库存/设备/生产） ============
+CREATE TABLE IF NOT EXISTS proj.fixed_assets (
+    asset_id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT, cost NUMERIC(19,4) NOT NULL,
+    residual_rate NUMERIC(9,4) NOT NULL DEFAULT 0, life_months INT NOT NULL,
+    accumulated_dep NUMERIC(19,4) NOT NULL DEFAULT 0, acquired_date DATE NOT NULL,
+    department TEXT, location TEXT, status TEXT NOT NULL DEFAULT 'Active', disposed_date DATE,
+    source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.depreciation_runs (
+    period CHAR(7) PRIMARY KEY, total NUMERIC(19,4) NOT NULL, lines JSONB NOT NULL, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.materials (
+    material_id TEXT PRIMARY KEY, name TEXT NOT NULL, unit TEXT NOT NULL, spec TEXT,
+    category TEXT NOT NULL DEFAULT 'raw', safety_stock NUMERIC(19,4) NOT NULL DEFAULT 0, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.warehouses (
+    warehouse_id TEXT PRIMARY KEY, name TEXT NOT NULL, location TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.stock_balances (
+    material_id TEXT NOT NULL, warehouse TEXT NOT NULL, qty NUMERIC(19,4) NOT NULL DEFAULT 0,
+    avg_cost NUMERIC(19,4) NOT NULL DEFAULT 0, PRIMARY KEY (material_id, warehouse)
+);
+CREATE TABLE IF NOT EXISTS proj.stock_moves (
+    move_id TEXT PRIMARY KEY, material_id TEXT NOT NULL, warehouse TEXT NOT NULL, direction TEXT NOT NULL,
+    qty NUMERIC(19,4) NOT NULL, unit_cost NUMERIC(19,4) NOT NULL, amount NUMERIC(19,4) NOT NULL,
+    memo TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.equipment (
+    equip_id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT, location TEXT, status TEXT NOT NULL DEFAULT 'Idle',
+    capacity_per_day NUMERIC(19,4) NOT NULL DEFAULT 0, linked_asset_id TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.production_orders (
+    order_no TEXT PRIMARY KEY, product_material_id TEXT NOT NULL, qty NUMERIC(19,4) NOT NULL,
+    completed_qty NUMERIC(19,4) NOT NULL DEFAULT 0, bom JSONB NOT NULL, equipment_id TEXT,
+    planned_start DATE, planned_end DATE, status TEXT NOT NULL DEFAULT 'Open', source_event_id UUID NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON proj.fixed_assets, proj.depreciation_runs, proj.materials, proj.warehouses, proj.stock_balances, proj.stock_moves, proj.equipment, proj.production_orders TO equi_app;
+
+INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_balance, auxiliary) VALUES
+ ('DepreciationExpense','5602-DEP','管理费用-折旧费','pl_expense','debit','department'),
+ ('ProductionCost','5001','生产成本','cost','debit','production_order'),
+ ('StockAdjust','5602-STK','管理费用-存货盘盈亏','pl_expense','debit','material'),
+ ('AssetDisposalGainLoss','5711-ASSET','资产处置损益','pl_expense','debit','asset')
+ON CONFLICT (account_key) DO NOTHING;

@@ -55,7 +55,7 @@ public static class Propagation
         var regCap = Pg.D(co["registered_capital"]);
         var profit = await c.ProfitBeforeTax(year);
         var empCount = Convert.ToInt32(await c.Scalar("SELECT COUNT(*) FROM proj.employees WHERE leave_date IS NULL"));
-        var assets = Pg.D(await c.Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Bank','AR','FixedAsset')"));
+        var assets = Pg.D(await c.Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Bank','AR','Inventory','Materials','FixedAssets','ExternalInvestment')"));
 
         var rows = new List<DerivationRow>
         {
