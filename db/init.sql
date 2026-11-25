@@ -548,3 +548,35 @@ INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_bal
  ('ShareBasedExpense','5602-SBC','管理费用-股份支付','pl_expense','debit','员工'),
  ('OtherCapitalReserve','4002-OTHER','资本公积-其他资本公积','equity','credit','员工')
 ON CONFLICT (account_key) DO NOTHING;
+
+-- ============ 扫码自动采集网关：设备/业务包/复核/计件/质检/物流 ============
+CREATE TABLE IF NOT EXISTS proj.devices (
+    device_id TEXT PRIMARY KEY, name TEXT NOT NULL, adapter TEXT NOT NULL, department TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.scan_packets (
+    packet_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ref_id TEXT NOT NULL, payload JSONB NOT NULL,
+    salt TEXT NOT NULL, check_code TEXT NOT NULL, barcode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Ready', source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.scan_reviews (
+    review_id TEXT PRIMARY KEY, packet_id TEXT NOT NULL, kind TEXT NOT NULL, payload JSONB NOT NULL,
+    reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Open', result TEXT, reviewer TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.piece_records (
+    id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, process TEXT NOT NULL, qty NUMERIC(19,4) NOT NULL,
+    period CHAR(7) NOT NULL, order_no TEXT, packet_id TEXT NOT NULL, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.quality_records (
+    qc_id TEXT PRIMARY KEY, batch TEXT NOT NULL, product TEXT NOT NULL, inspector TEXT NOT NULL, standard TEXT NOT NULL,
+    result TEXT NOT NULL, qty NUMERIC(19,4) NOT NULL, order_no TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.logistics_scans (
+    id TEXT PRIMARY KEY, tracking TEXT NOT NULL, stage TEXT NOT NULL, batch TEXT, status TEXT NOT NULL, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.scan_logs (
+    log_id TEXT PRIMARY KEY, device_id TEXT, barcode TEXT NOT NULL, result TEXT NOT NULL, detail TEXT,
+    event_ids JSONB NOT NULL DEFAULT '[]', at TIMESTAMPTZ NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE ON proj.devices, proj.scan_packets, proj.scan_reviews, proj.piece_records, proj.quality_records, proj.logistics_scans TO equi_app;
+GRANT SELECT, INSERT ON proj.scan_logs TO equi_app;

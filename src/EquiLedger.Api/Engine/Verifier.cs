@@ -24,7 +24,8 @@ public class Verifier
         "reports",
         "contracts", "module_states", "todos", "bank_flows", "whitelist_accounts", "investors",
         "evidence_files", "routine_usage", "impact_lists", "sales_orders", "commissions", "bonuses", "access_logs", "legal_library", "external_investments",
-        "ip_rights", "ip_events_log", "intangible_assets", "amort_runs", "esop_plans", "esop_virtual_dividends"
+        "ip_rights", "ip_events_log", "intangible_assets", "amort_runs", "esop_plans", "esop_virtual_dividends",
+        "devices", "scan_packets", "scan_reviews", "piece_records", "quality_records", "logistics_scans"
     };
 
     public record TableDiff(string Table, long Missing, long Extra);

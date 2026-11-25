@@ -636,7 +636,18 @@ public static partial class Projection
             var monthly = wageRule?["monthly"] is JsonValue wv && wv.TryGetValue(out decimal w) ? w : 0m;
             var bonuses = Pg.D(await c.Scalar("SELECT COALESCE(SUM(amount),0) FROM proj.bonuses WHERE employee_id=@emp AND period=@p AND status='Pending'", ("emp", empId), ("p", period)));
             var commissions = Pg.D(await c.Scalar("SELECT COALESCE(SUM(amount),0) FROM proj.commissions WHERE employee_id=@emp AND status='Pending'", ("emp", empId)));
-            var gross = monthly + bonuses + commissions;
+            // 计件工资：扫码采集的合格产量×工序计件单价（PieceRate 规则·自动计算）
+            var pieceRows = await c.Rows("SELECT process, SUM(qty) AS qty FROM proj.piece_records WHERE employee_id=@emp AND period=@p GROUP BY process", ("emp", empId), ("p", period));
+            decimal piece = 0; var pieceDetail = new JsonObject();
+            foreach (var pr in pieceRows)
+            {
+                var pRule = await c.ActiveRule("PieceRate", Pg.S(pr["process"]));
+                var up = pRule?["unitPrice"] is JsonValue pv && pv.TryGetValue(out decimal pu) ? pu : 0m;
+                var amt = R2(Pg.D(pr["qty"]) * up);
+                piece += amt;
+                pieceDetail[Pg.S(pr["process"])] = new JsonObject { ["qty"] = Pg.D(pr["qty"]), ["unitPrice"] = up, ["amount"] = amt };
+            }
+            var gross = monthly + bonuses + commissions + piece;
             if (gross <= 0) continue;
 
             var cityRule = await c.ActiveRule("SocialInsurance.City", Pg.S(emp["social_insurance_city"]));
@@ -655,6 +666,7 @@ public static partial class Projection
             {
                 ["工资标准"] = monthly, ["规则版本"] = ApplyCtx.RuleRef(wageRule),
                 ["一次性奖金"] = bonuses, ["提成"] = commissions,
+                ["计件工资"] = piece, ["计件明细"] = pieceDetail,
                 ["社保基数"] = siBase, ["个人社保公积金"] = siPersonal, ["单位社保公积金"] = siCompany,
                 ["个税推导单"] = iit.RowsJson(), ["实发"] = net
             };

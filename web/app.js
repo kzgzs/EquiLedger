@@ -66,6 +66,8 @@ const EVENT_CN = {
   IpAmortizationRun: '无形资产摊销', IpImpaired: '无形资产减值', IpDisposed: '无形资产处置', IpRenewalScan: '产权到期扫描',
   EsopApplied: '持股申请', EsopReviewed: '资格审核', EsopGranted: '股权授予', EsopVested: '期权归属',
   EsopExercised: '期权行权', EsopExited: '持股退出', VirtualDividendDeclared: '虚拟分红宣告', VirtualDividendPaid: '虚拟分红支付',
+  DeviceRegistered: '采集设备注册', ScanPacketCreated: '业务包贴码', ScanAccepted: '扫码受理', ScanQuarantined: '扫码异常隔离',
+  ScanReviewResolved: '扫码复核', QualityInspected: '质检登记', LogisticsScanned: '物流扫码', SalesScanned: '销售扫码',
   EmployeeShareSubscription: '员工入股', EmployeeShareGranted: '公司分股',
   CompanyInfoChanged: '公司信息变更', OperatorHandover: '操作员移交', TodoCompleted: '待办办结', AccountAdded: '新增成员账号',
   EvidenceUploaded: '依据上传', SecurityAlert: '安全告警', AccountStatusChanged: '账号启停', LegalEntryAdded: '法务库新增条目'
@@ -209,7 +211,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['report', '举报处理'], ['ip', '知识产权'], ['esop', '员工持股'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['report', '举报处理'], ['ip', '知识产权'], ['esop', '员工持股'], ['scan', '扫码采集'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -470,6 +472,27 @@ const RENDER = {
     <div class="row"><input id="vdId" placeholder="VD-1(可空)"><input id="vdPlan" placeholder="计划编号"><input id="vdRes" placeholder="VirtualDividend 决议号"><input id="vdAmt" placeholder="金额"><input type="file" id="vdFile"><button onclick="vdDeclare()">宣告</button></div>
     <div class="row"><input id="vpId" placeholder="宣告编号"><input id="vpAmt" placeholder="支付额"><input type="file" id="vpFile"><button onclick="vpPaid()">支付</button></div><p id="vdMsg" class="msg"></p></div>
     <div class="card"><h4>权益查询（知情查阅）</h4><div class="row"><input id="epEm" placeholder="员工ID"><button onclick="esopPos()">查询</button></div><div id="epBox"></div></div>`;
+    $('tabBody').innerHTML = h;
+  },
+  async scan() {
+    const [dv, pk, rv, lg, qc, lo, pc] = await Promise.all([api('/api/devices'), api('/api/scan-packets'), api('/api/scan-reviews'), api('/api/scan-logs'), api('/api/quality'), api('/api/logistics'), api('/api/piece-records')]);
+    const AD = { usb: 'USB', serial: '串口', network: '网络', sdk: '厂商SDK', camera: '摄像头' };
+    const KS = { ProductionPack: '生产贴码', WarehouseIn: '入库', WarehouseOut: '出库', WarehouseCount: '盘点', QualityCheck: '质检', Logistics: '物流', Sales: '销售' };
+    let h = `<h2>扫码自动采集网关</h2><p class="muted">统一设备适配协议：USB/串口/网络/厂商SDK/摄像头桥接器在企业现场运行（scripts/scan-bridge），HMAC 签名上传；系统不绑定品牌。条码只含唯一业务标识+校验码，扫码后系统查全量记录、验真、查重；<b>自动采集不等于自动相信</b>：异常隔离+人工复核+全程留痕。质检合格自动打包贴码；生产扫码进计件工资；仓库/物流/销售扫码自动入账。</p>
+    <h3>采集设备</h3>` + table([['device_id', '设备'], ['name', '名称'], ['adapter', '适配器'], ['department', '部门'], ['enabled', '启用']], dv, { adapter: v => AD[v] || v, enabled: v => v ? '是' : '否' });
+    h += `<div class="card"><h4>注册设备（操作员）</h4><div class="row"><input id="dvId" placeholder="设备ID DEV-01"><input id="dvName" placeholder="名称"><select id="dvAd">${Object.entries(AD).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><input id="dvDept" placeholder="部门"><input type="file" id="dvFile"><button onclick="regDevice()">注册</button></div>
+    <div class="row"><input id="dvSecId" placeholder="设备ID"><button onclick="getSecret()">领取密钥(配置桥接器)</button><span id="dvSec" class="hint"></span></div><p id="dvMsg" class="msg"></p></div>
+    <h3>业务包与条码（贴码打印）</h3>` + table([['packet_id', '包'], ['kind', '类型'], ['ref_id', '业务号'], ['barcode', '条码字符串'], ['status', '状态']], pk, { kind: v => KS[v] || v });
+    h += `<div class="card"><h4>生成业务包/贴码（操作员）</h4><div class="row"><input id="pkId" placeholder="PK-1(可空)"><select id="pkKind">${Object.entries(KS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><input id="pkRef" placeholder="业务号(工单/物料/运单/订单)"></div>
+    <div class="row"><textarea id="pkPayload" placeholder='payload JSON：生产 {orderNo,completedQty,warehouse,employeeId,process}；质检 {batch,product,inspector,standard,result,qty,orderNo,warehouse,employeeId,process}；仓库 {materialId,warehouse,qty,unitCost|purpose|countedQty}；物流 {tracking,stage,batch}；销售 {orderId,customer,amount,materialId,warehouse,qty,employeeId}' style="flex:1"></textarea></div>
+    <div class="row"><input type="file" id="pkFile"><button onclick="makePacket()">生成贴码</button><button class="ghost" onclick="printLabel()">打印标签(条码字符串+明细)</button></div><p id="pkMsg" class="msg"></p></div>
+    <div class="card"><h4>试扫/桥接器自测（HMAC 签名）</h4><div class="row"><input id="scDev" placeholder="设备ID"><input id="scSec" placeholder="设备密钥"><input id="scCode" placeholder="条码字符串 EQL1|…" style="flex:1"><button onclick="testScan()">扫描上传</button></div><p id="scMsg" class="msg"></p></div>
+    <h3>异常复核（操作员）</h3>` + table([['review_id', '复核'], ['packet_id', '包'], ['kind', '类型'], ['reason', '原因'], ['status', '状态'], ['result', '结果']], rv, { kind: v => KS[v] || v });
+    h += `<div class="row"><input id="rvId" placeholder="复核单号"><select id="rvRes"><option value="Approved">通过放行</option><option value="Rejected">驳回作废</option></select><button onclick="resolveReview()">处理</button></div><p id="rvMsg" class="msg"></p>
+    <h3>质检记录</h3>` + table([['qc_id', '质检'], ['batch', '批次'], ['product', '产品'], ['inspector', '检验人'], ['standard', '标准'], ['result', '结果'], ['qty', '数量']], qc, { result: v => v === 'Pass' ? '合格' : '不合格' });
+    h += `<h3>物流扫码</h3>` + table([['id', '记录'], ['tracking', '运单'], ['stage', '阶段'], ['batch', '批次'], ['status', '状态']], lo, {});
+    h += `<h3>计件台账（进薪酬自动算）</h3>` + table([['id', '记录'], ['employee_id', '员工'], ['process', '工序'], ['qty', '合格数'], ['period', '期间'], ['order_no', '工单']], pc, {});
+    h += `<h3>扫描留痕（最近200）</h3>` + table([['log_id', '留痕'], ['device_id', '设备'], ['result', '结果'], ['detail', '说明'], ['at', '时间']], lg, {});
     $('tabBody').innerHTML = h;
   },
   async contract() {
@@ -757,6 +780,47 @@ async function esopPos() {
     $('epBox').innerHTML = `<p class="hint">${esc(j.note)}</p>` + table([['plan_id', '计划'], ['form', '形式'], ['status', '状态'], ['granted_qty', '授予'], ['vested_qty', '归属'], ['exercised_qty', '行权']], j.plans, {}) + `<p class="muted">实股（直接/增资）：` + esc(JSON.stringify(j.direct)) + `</p>`;
   } catch (e) { $('epBox').innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
 }
+async function regDevice() {
+  try { await evPost('DeviceRegistered', { deviceId: $('dvId').value, name: $('dvName').value, adapter: $('dvAd').value, department: $('dvDept').value }, null, 'dvFile', 'dvMsg'); openTab('scan'); }
+  catch (e) { $('dvMsg').className = 'msg err'; $('dvMsg').textContent = e.message; }
+}
+async function getSecret() {
+  try { const j = await api('/api/device-secret?deviceId=' + encodeURIComponent($('dvSecId').value)); $('dvSec').textContent = '密钥：' + j.secret + '（仅显示一次，请配置到桥接器）'; }
+  catch (e) { $('dvSec').textContent = e.message; }
+}
+async function makePacket() {
+  try { await evPost('ScanPacketCreated', { packetId: $('pkId').value, kind: $('pkKind').value, refId: $('pkRef').value, payload: JSON.parse($('pkPayload').value || '{}') }, null, 'pkFile', 'pkMsg'); openTab('scan'); }
+  catch (e) { $('pkMsg').className = 'msg err'; $('pkMsg').textContent = e.message; }
+}
+async function printLabel() {
+  const id = prompt('业务包编号：'); if (!id) return;
+  const pk = (await api('/api/scan-packets')).find(x => x.packet_id === id);
+  if (!pk) { alert('业务包不存在'); return; }
+  const w = window.open('', '_blank');
+  w.document.write(`<html><head><title>标签 ${esc(pk.packet_id)}</title><style>body{font-family:monospace;padding:24px} .bc{font-size:22px;letter-spacing:1px;border:2px solid #000;padding:10px;margin:12px 0} table{border-collapse:collapse} td{border:1px solid #999;padding:4px 8px;font-size:12px}</style></head><body><h3>玄铁栈道 EquiLedger 业务标签</h3><div class="bc">${esc(pk.barcode)}</div><p>条码字符串请用标签软件/打印机驱动按 Code128 生成图形（常见扫描仪均可识读）；扫码后系统验真查重自动入账。</p><table>${Object.entries(pk.payload || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td></tr>`).join('')}<tr><td>packet</td><td>${esc(pk.packet_id)}</td></tr></table></body></html>`);
+  w.document.close(); w.print();
+}
+async function testScan() {
+  try {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const barcode = $('scCode').value;
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode($('scSec').value), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(ts + '|' + barcode));
+    const hex = [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const r = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Id': $('scDev').value, 'X-Device-Ts': ts, 'X-Device-Sign': hex }, body: JSON.stringify({ barcode }) });
+    const j = await r.json();
+    $('scMsg').className = r.ok ? 'msg ok' : 'msg err';
+    $('scMsg').textContent = `${j.result}${j.error ? '：' + j.error : ''}（事件 ${ (j.eventIds || []).length } 条）`;
+    if (r.ok) openTab('scan');
+  } catch (e) { $('scMsg').className = 'msg err'; $('scMsg').textContent = e.message; }
+}
+async function resolveReview() {
+  try {
+    const j = await api('/api/scan-reviews/resolve', 'POST', { reviewId: $('rvId').value, result: $('rvRes').value });
+    if (j.error) throw new Error(j.error);
+    openTab('scan');
+  } catch (e) { $('rvMsg').className = 'msg err'; $('rvMsg').textContent = e.message; }
+}
 async function submitEvent() {
   try {
     const j = await api('/api/events', 'POST', { type: $('evType').value, resolutionNo: $('evRes').value || null, payload: JSON.parse($('evPayload').value), evidence: evEvidence });
@@ -912,6 +976,11 @@ const TEMPLATES = {
   EsopExited: { planId: 'ESOP-1', capitalAmount: 0 },
   VirtualDividendDeclared: { dividendId: 'VD-1', planId: 'ESOP-V', amount: 20000 },
   VirtualDividendPaid: { dividendId: 'VD-1', amount: 20000 },
+  DeviceRegistered: { deviceId: 'DEV-01', name: '车间扫码枪', adapter: 'usb', department: '生产部' },
+  ScanPacketCreated: { packetId: 'PK-1', kind: 'ProductionPack', refId: 'PO-1', payload: { orderNo: 'PO-1', completedQty: 10, warehouse: 'w1', employeeId: 'e1', process: 'PR-A' } },
+  QualityInspected: { qcId: 'QC-1', batch: 'B-1', product: 'p1', inspector: 'e2', standard: 'GB/T-X', result: 'Pass', qty: 10, orderNo: 'PO-1', warehouse: 'w1', employeeId: 'e1', process: 'PR-A' },
+  LogisticsScanned: { tracking: 'SF-1', stage: 'Ship', batch: 'B-1' },
+  SalesScanned: { orderId: 'SO-9', customer: '客户A', amount: 5000, materialId: 'p1', warehouse: 'w1', qty: 2, employeeId: 'e1' },
   EmployeeShareSubscription: { employeeId: 'E1', subscribed: 100000 },
   EmployeeShareGranted: { employeeId: 'E1', capitalAmount: 50000, source: 'ShareholderGift', fromParty: 'alice' },
   BonusGranted: { employeeId: 'e1', amount: 2000, reason: '月度突出贡献', period: '2026-11' },

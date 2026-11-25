@@ -237,6 +237,14 @@ public static partial class Projection
             case "EsopExited": await EsopExited(c); break;
             case "VirtualDividendDeclared": await VirtualDividendDeclared(c); break;
             case "VirtualDividendPaid": await VirtualDividendPaid(c); break;
+            case "DeviceRegistered": await DeviceRegistered(c); break;
+            case "ScanPacketCreated": await ScanPacketCreated(c); break;
+            case "ScanAccepted": await ScanAccepted(c); break;
+            case "ScanQuarantined": await ScanQuarantined(c); break;
+            case "ScanReviewResolved": await ScanReviewResolved(c); break;
+            case "QualityInspected": await QualityInspected(c); break;
+            case "LogisticsScanned": await LogisticsScanned(c); break;
+            case "SalesScanned": await SalesScanned(c); break;
             case "ShareTransfer": await ShareTransfer(c); break;
             case "ShareExit": await ShareExit(c); break;
             case "ShareholderDeceased": await ShareholderDeceased(c); break;

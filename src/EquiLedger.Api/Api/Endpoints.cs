@@ -473,6 +473,87 @@ public static class Endpoints
             return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,status,outcome FROM proj.reports WHERE reporter_actor=@u ORDER BY report_id", ("u", c.UserId))));
         });
 
+        // ---------- 扫码自动采集网关 ----------
+        app.MapGet("/api/devices", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT device_id,name,adapter,department,enabled FROM proj.devices ORDER BY device_id")));
+        });
+        app.MapGet("/api/device-secret", async (HttpRequest req, string deviceId) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || c.Role != "Operator") return Deny("设备密钥仅操作员可领取（配置桥接器用）");
+            await using var conn = db.App();
+            var s = await conn.Scalar("SELECT secret FROM proj.devices WHERE device_id=@d", ("d", deviceId));
+            if (s is null or DBNull) return Deny("设备不存在");
+            return Results.Json(new { deviceId, secret = Pg.S(s) });
+        });
+        app.MapGet("/api/scan-packets", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT packet_id,kind,ref_id,barcode,status,payload FROM proj.scan_packets ORDER BY packet_id")));
+        });
+        app.MapGet("/api/scan-logs", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT log_id,device_id,barcode,result,detail,at FROM proj.scan_logs ORDER BY at DESC LIMIT 200")));
+        });
+        app.MapGet("/api/scan-reviews", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT review_id,packet_id,kind,reason,status,result,reviewer FROM proj.scan_reviews ORDER BY review_id")));
+        });
+        app.MapGet("/api/quality", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT qc_id,batch,product,inspector,standard,result,qty,order_no FROM proj.quality_records ORDER BY qc_id")));
+        });
+        app.MapGet("/api/logistics", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT id,tracking,stage,batch,status FROM proj.logistics_scans ORDER BY id")));
+        });
+        app.MapGet("/api/piece-records", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT id,employee_id,process,qty,period,order_no,packet_id FROM proj.piece_records ORDER BY id")));
+        });
+        app.MapPost("/api/scan", async (HttpRequest req, JsonObject body) =>
+        {
+            // 设备适配器统一入口：HMAC 认证，不依赖登录会话；企业现场桥接器（USB/串口/网络/SDK/摄像头）调用
+            var deviceId = req.Headers["X-Device-Id"].ToString();
+            var ts = req.Headers["X-Device-Ts"].ToString();
+            var sign = req.Headers["X-Device-Sign"].ToString();
+            var barcode = body["barcode"]?.GetValue<string>() ?? "";
+            await using var conn = db.App();
+            var actor = await conn.Scalar("SELECT username FROM proj.accounts WHERE role='Operator' AND enabled=TRUE AND frozen=FALSE ORDER BY username LIMIT 1") as string;
+            if (actor is null) return Results.Json(new { error = "无可用操作员" }, statusCode: 503);
+            var outc = await EquiLedger.Engine.ScanGateway.Process(db, store, deviceId, ts, sign, barcode, actor);
+            return Results.Json(new { result = outc.Result, logId = outc.LogId, eventIds = outc.EventIds, error = outc.Error },
+                statusCode: outc.Result == "Accepted" ? 200 : 403);
+        });
+        app.MapPost("/api/scan-reviews/resolve", async (HttpRequest req, JsonObject body) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || c.Role != "Operator") return Deny("扫码复核仅操作员可处理");
+            var outc = await EquiLedger.Engine.ScanGateway.ResolveReview(db, store, body["reviewId"]?.GetValue<string>() ?? "", body["result"]?.GetValue<string>() ?? "", c.UserId);
+            return Results.Json(new { result = outc.Result, eventIds = outc.EventIds, error = outc.Error }, statusCode: outc.Error is null ? 200 : 403);
+        });
+
         // ---------- 知识产权双账簿 ----------
         app.MapGet("/api/ip-rights", async (HttpRequest req) =>
         {

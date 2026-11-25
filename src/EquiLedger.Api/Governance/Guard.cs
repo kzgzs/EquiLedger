@@ -42,7 +42,9 @@ public static class Guard
         "PurchaseRequested", "PurchaseOrderCreated", "PurchaseDelivered", "PurchaseInspected", "PurchasePaid", "LoanInterestAccrued", "TaxPaid",
         "NotifyGroupConfigured", "SupervisionEmailSet", "ReportFiled",
         "IpRegistered", "IpRecordAdded", "IpValued", "IpCapitalized", "IpAmortizationRun", "IpImpaired", "IpDisposed", "IpRenewalScan",
-        "EsopApplied", "EsopReviewed", "EsopVested", "VirtualDividendPaid"
+        "EsopApplied", "EsopReviewed", "EsopVested", "VirtualDividendPaid",
+        "DeviceRegistered", "ScanPacketCreated", "ScanAccepted", "ScanQuarantined", "ScanReviewResolved",
+        "QualityInspected", "LogisticsScanned", "SalesScanned"
     };
     private static readonly Dictionary<string, string> RoutineCategory = new()
     {
@@ -580,6 +582,62 @@ public static class Guard
                     if (vd.Count == 0) throw new GuardException("NoDividend", "先宣告后支付");
                     if (Pg.S(vd[0]["status"]) != "Declared") throw new GuardException("AlreadyPaid", "已支付");
                     if (Pd("amount") != Pg.D(vd[0]["amount"])) throw new GuardException("AmountMismatch", "支付额须等于宣告额");
+                    break;
+                }
+            case "DeviceRegistered":
+                {
+                    if (Ps("adapter") is not ("usb" or "serial" or "network" or "sdk" or "camera")) throw new GuardException("BadParams", "适配器须为 usb/serial/network/sdk/camera（统一接入协议，不绑定品牌）");
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.devices WHERE device_id=@d", ("d", Ps("deviceId")))) > 0) throw new GuardException("DuplicateDevice", "设备已注册");
+                    break;
+                }
+            case "ScanPacketCreated":
+                {
+                    if (Ps("kind") is not ("ProductionPack" or "WarehouseIn" or "WarehouseOut" or "WarehouseCount" or "QualityCheck" or "Logistics" or "Sales"))
+                        throw new GuardException("BadParams", "业务包类型须为 ProductionPack/WarehouseIn/WarehouseOut/WarehouseCount/QualityCheck/Logistics/Sales");
+                    if (string.IsNullOrWhiteSpace(Ps("refId")) || p["payload"] is not JsonObject) throw new GuardException("BadParams", "refId 与 payload 必填");
+                    break;
+                }
+            case "ScanAccepted":
+                {
+                    var pk = await conn.Rows("SELECT status FROM proj.scan_packets WHERE packet_id=@p", ("p", Ps("packetId")));
+                    if (pk.Count == 0) throw new GuardException("NoPacket", "业务包不存在");
+                    if (Pg.S(pk[0]["status"]) != "Ready") throw new GuardException("DuplicateScan", "业务包已消费/隔离，重复扫描拒绝");
+                    var dv = await conn.Rows("SELECT enabled FROM proj.devices WHERE device_id=@d", ("d", Ps("deviceId")));
+                    if (dv.Count == 0 || !(bool)dv[0]["enabled"]!) throw new GuardException("DeviceDenied", "设备未注册或已停用");
+                    break;
+                }
+            case "ScanQuarantined":
+                {
+                    var pk = await conn.Rows("SELECT status FROM proj.scan_packets WHERE packet_id=@p", ("p", Ps("packetId")));
+                    if (pk.Count == 0 || Pg.S(pk[0]["status"]) != "Ready") throw new GuardException("BadStatus", "仅待消费业务包可隔离");
+                    if (string.IsNullOrWhiteSpace(Ps("reason"))) throw new GuardException("BadParams", "隔离原因必填");
+                    break;
+                }
+            case "ScanReviewResolved":
+                {
+                    var rv = await conn.Rows("SELECT status FROM proj.scan_reviews WHERE review_id=@r", ("r", Ps("reviewId")));
+                    if (rv.Count == 0) throw new GuardException("NoReview", "复核单不存在");
+                    if (Pg.S(rv[0]["status"]) != "Open") throw new GuardException("AlreadyResolved", "复核已处理");
+                    if (Ps("result") is not ("Approved" or "Rejected")) throw new GuardException("BadParams", "复核结果须为 Approved/Rejected");
+                    break;
+                }
+            case "QualityInspected":
+                {
+                    if (Ps("result") is not ("Pass" or "Fail")) throw new GuardException("BadParams", "质检结果须为 Pass/Fail");
+                    if (Pd("qty") <= 0 || string.IsNullOrWhiteSpace(Ps("batch")) || string.IsNullOrWhiteSpace(Ps("product")) || string.IsNullOrWhiteSpace(Ps("inspector")) || string.IsNullOrWhiteSpace(Ps("standard")))
+                        throw new GuardException("BadParams", "批次/产品/检验人/检验标准/数量必填");
+                    break;
+                }
+            case "LogisticsScanned":
+                {
+                    if (Ps("stage") is not ("Handover" or "Ship" or "Receive")) throw new GuardException("BadParams", "物流阶段须为 Handover/Ship/Receive");
+                    if (string.IsNullOrWhiteSpace(Ps("tracking"))) throw new GuardException("BadParams", "运单/包裹号必填");
+                    break;
+                }
+            case "SalesScanned":
+                {
+                    if (Pd("amount") <= 0 || Pd("qty") <= 0 || string.IsNullOrWhiteSpace(Ps("orderId")) || string.IsNullOrWhiteSpace(Ps("customer")) || string.IsNullOrWhiteSpace(Ps("materialId")) || string.IsNullOrWhiteSpace(Ps("warehouse")))
+                        throw new GuardException("BadParams", "销售扫码须含订单/客户/金额/物料/仓库/数量");
                     break;
                 }
             case "ShareSubscription":
