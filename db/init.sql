@@ -482,6 +482,14 @@ CREATE TABLE IF NOT EXISTS proj.notify_logs (
 GRANT SELECT, INSERT, UPDATE, DELETE ON proj.notify_groups, proj.notify_bindings TO equi_app;
 GRANT SELECT, INSERT ON proj.notify_logs TO equi_app;
 
+-- ============ 举报通道（任何人可举报·匿名保护·监事调查·决议办结） ============
+CREATE TABLE IF NOT EXISTS proj.reports (
+    report_id TEXT PRIMARY KEY, category TEXT NOT NULL, target TEXT NOT NULL, description TEXT NOT NULL,
+    anonymous BOOLEAN NOT NULL DEFAULT FALSE, reporter TEXT NOT NULL, reporter_actor TEXT NOT NULL,
+    findings TEXT, outcome TEXT, action TEXT, status TEXT NOT NULL DEFAULT 'Open', source_event_id UUID NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE ON proj.reports TO equi_app;
+
 INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_balance, auxiliary) VALUES
  ('LoanPayable','2501','长期借款','liability','credit','债权人'),
  ('InterestPayable','2232','应付利息','liability','credit','债权人'),

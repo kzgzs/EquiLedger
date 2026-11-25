@@ -214,6 +214,11 @@ public static partial class Projection
             case "TaxReturnFiled": await TaxReturnFiled(c); break;
             case "TaxPaid": await TaxPaid(c); break;
             case "NotifyGroupConfigured": await NotifyGroupConfigured(c); break;
+            case "ReportFiled": await ReportFiled(c); break;
+            case "ReportInvestigated": await ReportInvestigated(c); break;
+            case "ReportClosed": await ReportClosed(c); break;
+            case "EmployeeShareSubscription": await EmployeeShareSubscription(c); break;
+            case "EmployeeShareGranted": await EmployeeShareGranted(c); break;
             case "ShareTransfer": await ShareTransfer(c); break;
             case "ShareExit": await ShareExit(c); break;
             case "ShareholderDeceased": await ShareholderDeceased(c); break;

@@ -25,7 +25,8 @@ public static class Guard
         "BonusGranted", "ModuleSwitchChanged", "InvestmentReceived", "OperatorHandover",
         "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade",
         "FixedAssetDisposed", "ProductionOrderCreated",
-        "PurchaseApproved", "PurchasePaymentApproved", "LoanReceived", "LoanRepaid", "TaxReturnFiled", "NotifyGroupConfigured"
+        "PurchaseApproved", "PurchasePaymentApproved", "LoanReceived", "LoanRepaid", "TaxReturnFiled", "NotifyGroupConfigured",
+        "EmployeeShareSubscription", "EmployeeShareGranted", "ReportClosed"
     };
     private static readonly HashSet<string> RoutineOrResolution = new()
     {
@@ -62,6 +63,9 @@ public static class Guard
         ["LoanRepaid"] = new[] { "LoanRepayment" },
         ["TaxReturnFiled"] = new[] { "TaxFiling" },
         ["NotifyGroupConfigured"] = new[] { "NotifyPolicy" },
+        ["EmployeeShareSubscription"] = new[] { "EmployeeShare" },
+        ["EmployeeShareGranted"] = new[] { "EmployeeShareGrant" },
+        ["ReportClosed"] = new[] { "ReportHandling" },
         ["OperatorHandover"] = new[] { "OperatorHandover" },
         ["CorrectionRecorded"] = new[] { "Correction" },
         ["PeriodClosed"] = new[] { "PeriodClose" },
@@ -140,6 +144,21 @@ public static class Guard
                 if (!isParty && !(caller.Role == "Supervisor" && dualAuth))
                     throw new GuardException("PrivateContract", "私密协议仅签署当事人可查；监事调查/司法导出需双授权且访问留痕");
             }
+            return;
+        }
+        if (t == "ReportFiled")
+        {
+            // 举报通道：公司任何启用账号均可举报（含匿名），不占操作员执行通道；依据可选
+            if (Ps("category") is not ("Embezzlement" or "Fraud" or "RelatedPartyTransfer" or "ConflictOfInterest" or "AbuseOfPower" or "Other"))
+                throw new GuardException("BadParams", "举报类别须为 Embezzlement/Fraud/RelatedPartyTransfer/ConflictOfInterest/AbuseOfPower/Other");
+            if (string.IsNullOrWhiteSpace(Ps("description"))) throw new GuardException("BadParams", "举报描述必填");
+            if (string.IsNullOrWhiteSpace(Ps("target"))) throw new GuardException("BadParams", "被举报对象必填");
+            return;
+        }
+        if (t == "ReportInvestigated")
+        {
+            if (caller.Role != "Supervisor") throw new GuardException("RoleDenied", "举报调查权归监事");
+            if (string.IsNullOrWhiteSpace(Ps("findings"))) throw new GuardException("BadParams", "调查结论必填");
             return;
         }
         if (caller.Role != "Operator")
@@ -372,6 +391,43 @@ public static class Guard
                     if (!EquiLedger.Engine.NotifyPolicy.GroupKinds.Contains(Ps("kind"))) throw new GuardException("BadParams", "群类型须为 company/board/shareholder/supervisor/department/staff");
                     if (!Ps("webhook").StartsWith("https://")) throw new GuardException("BadParams", "webhook 须为 https 地址（企业微信/钉钉/飞书群机器人）");
                     if (p["bindings"] is not JsonArray) throw new GuardException("BadParams", "bindings 须为事件类型数组");
+                    break;
+                }
+            case "EmployeeShareSubscription":
+                {
+                    var em = await conn.Rows("SELECT party_id,leave_date FROM proj.employees WHERE employee_id=@i", ("i", Ps("employeeId")));
+                    if (em.Count == 0) throw new GuardException("NoEmployee", "员工不存在");
+                    if (em[0]["leave_date"] is not null and not DBNull) throw new GuardException("EmployeeLeft", "离职员工不得入股");
+                    if (Pd("subscribed") <= 0 && (p["targetRatio"] is null || Pd("targetRatio") <= 0 || Pd("targetRatio") >= 1)) throw new GuardException("BadParams", "须填认缴额 subscribed 或目标比例 targetRatio(0,1)");
+                    break;
+                }
+            case "EmployeeShareGranted":
+                {
+                    var em = await conn.Rows("SELECT party_id,leave_date FROM proj.employees WHERE employee_id=@i", ("i", Ps("employeeId")));
+                    if (em.Count == 0) throw new GuardException("NoEmployee", "员工不存在");
+                    if (em[0]["leave_date"] is not null and not DBNull) throw new GuardException("EmployeeLeft", "离职员工不得分股");
+                    var cap = Pd("capitalAmount");
+                    if (cap <= 0) throw new GuardException("BadParams", "分股额度须为正");
+                    var src = Ps("source");
+                    if (src == "ShareholderGift")
+                    {
+                        var have = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(subscribed,0) FROM proj.cap_positions WHERE party_id=@f AND cap_version=(SELECT MAX(version) FROM proj.cap_versions)", ("f", Ps("fromParty"))));
+                        if (have < cap) throw new GuardException("InsufficientShares", $"赠与股东持股不足（{have} < {cap}）");
+                    }
+                    else if (src == "CapitalReserve")
+                    {
+                        var reserve = Convert.ToDecimal(await conn.Scalar("SELECT COALESCE(SUM(credit-debit),0) FROM proj.ledger WHERE account='CapitalReserve'"));
+                        if (reserve < cap) throw new GuardException("InsufficientReserve", $"资本公积余额不足（{reserve} < {cap}）");
+                    }
+                    else throw new GuardException("BadParams", "source 须为 CapitalReserve 或 ShareholderGift");
+                    break;
+                }
+            case "ReportClosed":
+                {
+                    var rp = await conn.Rows("SELECT status FROM proj.reports WHERE report_id=@r", ("r", Ps("reportId")));
+                    if (rp.Count == 0) throw new GuardException("NoReport", "举报不存在");
+                    if (Pg.S(rp[0]["status"]) == "Closed") throw new GuardException("AlreadyClosed", "举报已办结");
+                    if (Ps("outcome") is not ("Substantiated" or "PartiallySubstantiated" or "Unsubstantiated")) throw new GuardException("BadParams", "结论须为 Substantiated/PartiallySubstantiated/Unsubstantiated");
                     break;
                 }
             case "ShareSubscription":

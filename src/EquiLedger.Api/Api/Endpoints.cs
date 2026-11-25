@@ -454,6 +454,22 @@ public static class Endpoints
             return Results.Json(JRows(await conn.Rows("SELECT log_id,group_id,event_type,level,digest,status,sent_at FROM proj.notify_logs ORDER BY sent_at DESC LIMIT 100")));
         });
 
+        // ---------- 举报通道 ----------
+        app.MapGet("/api/complaints", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,description,anonymous,reporter,findings,outcome,action,status FROM proj.reports ORDER BY report_id")));
+        });
+        app.MapGet("/api/my-complaints", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null) return Deny("未登录");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,status,outcome FROM proj.reports WHERE reporter_actor=@u ORDER BY report_id", ("u", c.UserId))));
+        });
+
         app.MapGet("/api/employees", async (HttpRequest req) =>
         {
             var c = await Auth(req, db);

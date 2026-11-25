@@ -71,6 +71,11 @@ public static class NotifyPolicy
         ["TaxReturnFiled"] = (Level.Internal, new[] { "board", "supervisor" }),
         ["TaxPaid"] = (Level.Internal, new[] { "company", "board", "supervisor" }),
         ["NotifyGroupConfigured"] = (Level.Internal, new[] { "company", "board", "supervisor" }),
+        ["ReportFiled"] = (Level.Internal, new[] { "supervisor", "board" }),
+        ["ReportInvestigated"] = (Level.Internal, new[] { "supervisor", "board" }),
+        ["ReportClosed"] = (Level.Internal, new[] { "supervisor", "board", "company" }),
+        ["EmployeeShareSubscription"] = (Level.Internal, new[] { "company", "board", "shareholder" }),
+        ["EmployeeShareGranted"] = (Level.Internal, new[] { "company", "board", "shareholder" }),
         ["TodoCompleted"] = (Level.Public, new[] { "company", "department" }),
         ["LegalEntryAdded"] = (Level.Internal, new[] { "company", "board" })
     };

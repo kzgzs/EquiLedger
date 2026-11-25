@@ -60,6 +60,8 @@ const EVENT_CN = {
   PurchaseInspected: '验收入库', PurchasePaymentApproved: '付款审批', PurchasePaid: '采购支付',
   LoanReceived: '借款到账', LoanInterestAccrued: '利息计提', LoanRepaid: '还本付息',
   TaxReturnFiled: '纳税申报', TaxPaid: '税款缴纳', NotifyGroupConfigured: '群通知配置',
+  ReportFiled: '举报提交', ReportInvestigated: '监事调查', ReportClosed: '举报办结',
+  EmployeeShareSubscription: '员工入股', EmployeeShareGranted: '公司分股',
   CompanyInfoChanged: '公司信息变更', OperatorHandover: '操作员移交', TodoCompleted: '待办办结', AccountAdded: '新增成员账号',
   EvidenceUploaded: '依据上传', SecurityAlert: '安全告警', AccountStatusChanged: '账号启停', LegalEntryAdded: '法务库新增条目'
 };
@@ -202,7 +204,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['report', '举报'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -387,6 +389,17 @@ const RENDER = {
     <p class="muted">每群独立设置：未绑定事件不推送（默认拒绝）；同一事件按群类型生成不同模板；发送前系统强制数据分级+字段过滤+接收范围检查；高敏感（工资账本/个人薪酬/股权转让对价/涉密合同）仅推摘要+授权系统内查看。群配置变更走 NotifyPolicy 决议。出口为企业微信/钉钉/飞书群机器人 webhook，不自建群聊。</p>
     <h3>群组与绑定</h3>` + table([['groupId', '群'], ['name', '名称'], ['kind', '类型'], ['department', '部门'], ['enabled', '启用'], ['webhookMasked', 'Webhook(掩码)'], ['bindings', '绑定事件']], g.groups, { enabled: v => v ? '是' : '否', kind: v => KC[v] || v, bindings: v => (v || []).map(x => EVENT_CN[x] || x).join('、') });
     h += `<h3>推送留痕（最近100）</h3>` + table([['log_id', '留痕'], ['group_id', '群'], ['event_type', '事件'], ['level', '分级'], ['digest', '摘要模式'], ['status', '状态'], ['sent_at', '时间']], logs, { event_type: v => EVENT_CN[v] || v, digest: v => v ? '是' : '否' });
+    $('tabBody').innerHTML = h;
+  },
+  async report() {
+    const [rs, mine] = await Promise.all([api('/api/complaints'), api('/api/my-complaints')]);
+    const CAT = { Embezzlement: '挪用侵占', Fraud: '舞弊造假', RelatedPartyTransfer: '关联利益输送', ConflictOfInterest: '利益冲突', AbuseOfPower: '滥用职权', Other: '其他' };
+    const OUT = { Substantiated: '属实', PartiallySubstantiated: '部分属实', Unsubstantiated: '不属实' };
+    const ST = { Open: '待调查', Investigating: '调查中', Closed: '已办结' };
+    let h = `<h2>举报通道</h2><p class="muted">公司任何账号均可举报（支持匿名）。举报直送监事群；监事调查（ReportInvestigated）、办结走 ReportHandling 决议（ReportClosed）。匿名举报界面掩码，身份仅授权审计可溯；打击报复举报人本身可再举报。</p>
+    <h3>举报列表（治理成员可见·匿名掩码）</h3>` + table([['report_id', '编号'], ['category', '类别'], ['target', '对象'], ['status', '状态'], ['outcome', '结论'], ['reporter', '举报人']], rs, { category: v => CAT[v] || v, status: v => ST[v] || v, outcome: v => OUT[v] || v || '' });
+    h += `<h3>我的举报</h3>` + table([['report_id', '编号'], ['category', '类别'], ['target', '对象'], ['status', '状态'], ['outcome', '结论']], mine, { category: v => CAT[v] || v, status: v => ST[v] || v, outcome: v => OUT[v] || v || '' });
+    h += `<p class="hint">提交入口：事件提交 → ReportFiled（类别/对象/描述/匿名开关，依据可选）；属实办结自动生成整改待办。</p>`;
     $('tabBody').innerHTML = h;
   },
   async contract() {
@@ -681,6 +694,11 @@ const TEMPLATES = {
   TaxReturnFiled: { period: '2026-11', kind: 'VAT', amount: 0, detail: {} },
   TaxPaid: { period: '2026-11', kind: 'VAT', amount: 0 },
   NotifyGroupConfigured: { groupId: 'G-BOARD', name: '董事会群', kind: 'board', department: '', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=示例', enabled: true, bindings: ['ResolutionRecorded', 'PurchasePaymentApproved', 'LoanRepaid', 'PeriodClosed'] },
+  ReportFiled: { reportId: 'RP-1', category: 'Embezzlement', target: '张三', description: '疑似挪用备用金，附线索说明', anonymous: true },
+  ReportInvestigated: { reportId: 'RP-1', findings: '调取银行流水与凭证核对，情况属实' },
+  ReportClosed: { reportId: 'RP-1', outcome: 'Substantiated', action: '责令退还款项并移送司法' },
+  EmployeeShareSubscription: { employeeId: 'E1', subscribed: 100000 },
+  EmployeeShareGranted: { employeeId: 'E1', capitalAmount: 50000, source: 'ShareholderGift', fromParty: 'alice' },
   BonusGranted: { employeeId: 'e1', amount: 2000, reason: '月度突出贡献', period: '2026-11' },
   EmployeeLeft: { employeeId: 'e1', leaveDate: '2026-11-30', reason: 'MutualTermination', remainingLeaveDays: 5, selfConfirmed: true },
   ShareSubscription: { partyId: 'carol', partyName: '股东丙', subscribed: 100000, targetRatio: 0, contractId: 'CT-002' },
