@@ -137,18 +137,19 @@ public class ApplyCtx
             ("p", partyId), ("n", name), ("k", kind), ("e", Evt.EventId));
     }
 
-    /// <summary>期间损益（投影自 ledger）。</summary>
+    /// <summary>期间损益（投影自 ledger·全损益科目自动汇总，含摊销/减值/股份支付/利息/处置损益）。</summary>
     public async Task<decimal> ProfitBeforeTax(int year)
     {
-        var rev = Pg.D(await Scalar("SELECT COALESCE(SUM(credit-debit),0) FROM proj.ledger WHERE account='Revenue' AND period LIKE @y", ("y", $"{year}-%")));
-        var exp = Pg.D(await Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Expense','PayrollExpense','SICompanyExpense') AND period LIKE @y", ("y", $"{year}-%")));
+        var rev = Pg.D(await Scalar("SELECT COALESCE(SUM(credit-debit),0) FROM proj.ledger l JOIN proj.chart_of_accounts ch ON ch.account_key=l.account WHERE ch.category='pl_revenue' AND l.period LIKE @y", ("y", $"{year}-%")));
+        var exp = Pg.D(await Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger l JOIN proj.chart_of_accounts ch ON ch.account_key=l.account WHERE ch.category='pl_expense' AND l.period LIKE @y", ("y", $"{year}-%")));
         return rev - exp;
     }
 
     public async Task<decimal> NetAssets()
     {
-        var assets = Pg.D(await Scalar("SELECT COALESCE(SUM(debit-credit),0) FROM proj.ledger WHERE account IN ('Bank','AR','Inventory','Materials','FixedAssets','ExternalInvestment')"));
-        var liab = Pg.D(await Scalar("SELECT COALESCE(SUM(credit-debit),0) FROM proj.ledger WHERE account IN ('DividendPayable','TaxPayable','SIPayable','ExitPayable','LoanPayable','DividendSuspense')"));
+        // 全资产/负债科目按科目表方向自动汇总（含累计折旧/摊销/减值备抵、无形/长投/应付/薪酬应付）
+        var assets = Pg.D(await Scalar("SELECT COALESCE(SUM(CASE WHEN ch.normal_balance='debit' THEN l.debit-l.credit ELSE l.credit-l.debit END),0) FROM proj.ledger l JOIN proj.chart_of_accounts ch ON ch.account_key=l.account WHERE ch.category='asset'"));
+        var liab = Pg.D(await Scalar("SELECT COALESCE(SUM(CASE WHEN ch.normal_balance='credit' THEN l.credit-l.debit ELSE l.debit-l.credit END),0) FROM proj.ledger l JOIN proj.chart_of_accounts ch ON ch.account_key=l.account WHERE ch.category='liability'"));
         return assets - liab;
     }
 
@@ -219,6 +220,23 @@ public static partial class Projection
             case "ReportClosed": await ReportClosed(c); break;
             case "EmployeeShareSubscription": await EmployeeShareSubscription(c); break;
             case "EmployeeShareGranted": await EmployeeShareGranted(c); break;
+            case "SupervisionEmailSet": await SupervisionEmailSet(c); break;
+            case "IpRegistered": await IpRegistered(c); break;
+            case "IpRecordAdded": await IpRecordAdded(c); break;
+            case "IpValued": await IpValued(c); break;
+            case "IpCapitalized": await IpCapitalized(c); break;
+            case "IpAmortizationRun": await IpAmortizationRun(c); break;
+            case "IpImpaired": await IpImpaired(c); break;
+            case "IpDisposed": await IpDisposed(c); break;
+            case "IpRenewalScan": await IpRenewalScan(c); break;
+            case "EsopApplied": await EsopApplied(c); break;
+            case "EsopReviewed": await EsopReviewed(c); break;
+            case "EsopGranted": await EsopGranted(c); break;
+            case "EsopVested": await EsopVested(c); break;
+            case "EsopExercised": await EsopExercised(c); break;
+            case "EsopExited": await EsopExited(c); break;
+            case "VirtualDividendDeclared": await VirtualDividendDeclared(c); break;
+            case "VirtualDividendPaid": await VirtualDividendPaid(c); break;
             case "ShareTransfer": await ShareTransfer(c); break;
             case "ShareExit": await ShareExit(c); break;
             case "ShareholderDeceased": await ShareholderDeceased(c); break;

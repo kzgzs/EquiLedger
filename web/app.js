@@ -60,7 +60,12 @@ const EVENT_CN = {
   PurchaseInspected: '验收入库', PurchasePaymentApproved: '付款审批', PurchasePaid: '采购支付',
   LoanReceived: '借款到账', LoanInterestAccrued: '利息计提', LoanRepaid: '还本付息',
   TaxReturnFiled: '纳税申报', TaxPaid: '税款缴纳', NotifyGroupConfigured: '群通知配置',
-  ReportFiled: '举报提交', ReportInvestigated: '监事调查', ReportClosed: '举报办结',
+  ReportFiled: '举报登记', ReportInvestigated: '调查取证', ReportClosed: '举报办结',
+  SupervisionEmailSet: '监管邮箱设置',
+  IpRegistered: '产权建档', IpRecordAdded: '产权记录', IpValued: '产权评估', IpCapitalized: '无形资产确认',
+  IpAmortizationRun: '无形资产摊销', IpImpaired: '无形资产减值', IpDisposed: '无形资产处置', IpRenewalScan: '产权到期扫描',
+  EsopApplied: '持股申请', EsopReviewed: '资格审核', EsopGranted: '股权授予', EsopVested: '期权归属',
+  EsopExercised: '期权行权', EsopExited: '持股退出', VirtualDividendDeclared: '虚拟分红宣告', VirtualDividendPaid: '虚拟分红支付',
   EmployeeShareSubscription: '员工入股', EmployeeShareGranted: '公司分股',
   CompanyInfoChanged: '公司信息变更', OperatorHandover: '操作员移交', TodoCompleted: '待办办结', AccountAdded: '新增成员账号',
   EvidenceUploaded: '依据上传', SecurityAlert: '安全告警', AccountStatusChanged: '账号启停', LegalEntryAdded: '法务库新增条目'
@@ -204,7 +209,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['report', '举报'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['erp', '资源'], ['scm', '采购'], ['groups', '群通知'], ['report', '举报处理'], ['ip', '知识产权'], ['esop', '员工持股'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -386,20 +391,85 @@ const RENDER = {
     const [g, logs] = await Promise.all([api('/api/notify-groups'), api('/api/notify-logs')]);
     const KC = { company: '公司群', board: '董事会群', shareholder: '股东群', supervisor: '监事群', department: '部门群', staff: '员工群' };
     let h = `<h2>群通知治理</h2><p class="msg warn">${esc(g.warning)}</p>
-    <p class="muted">每群独立设置：未绑定事件不推送（默认拒绝）；同一事件按群类型生成不同模板；发送前系统强制数据分级+字段过滤+接收范围检查；高敏感（工资账本/个人薪酬/股权转让对价/涉密合同）仅推摘要+授权系统内查看。群配置变更走 NotifyPolicy 决议。出口为企业微信/钉钉/飞书群机器人 webhook，不自建群聊。</p>
-    <h3>群组与绑定</h3>` + table([['groupId', '群'], ['name', '名称'], ['kind', '类型'], ['department', '部门'], ['enabled', '启用'], ['webhookMasked', 'Webhook(掩码)'], ['bindings', '绑定事件']], g.groups, { enabled: v => v ? '是' : '否', kind: v => KC[v] || v, bindings: v => (v || []).map(x => EVENT_CN[x] || x).join('、') });
+    <p class="muted">每群独立设置：未绑定事件不推送（默认拒绝）；同一事件按群类型生成不同模板；发送前系统强制数据分级+字段过滤+接收范围检查；高敏感（工资账本/个人薪酬/股权转让对价/涉密合同）仅推摘要+授权系统内查看。<b>群设置由操作员直接完成，无需决议。</b>出口为企业微信/钉钉/飞书群机器人 webhook（三平台接口已实现），不自建群聊。</p>
+    <h3>监管邮箱（操作员设置·各群介绍展示）</h3>
+    <div class="row"><input id="grpEmail" placeholder="supervision@company.com" value="${esc(g.supervisionEmail || '')}"><button onclick="setSupEmail()">保存监管邮箱</button></div>
+    <p class="hint">监管邮箱由多个高层共同监督登录；举报走邮箱而非系统自助通道；邮箱地址展示在每个群的介绍里。</p>
+    <h3>群组与绑定（操作员直设）</h3>` + table([['groupId', '群'], ['name', '名称'], ['kind', '类型'], ['platform', '平台'], ['department', '部门'], ['enabled', '启用'], ['webhookMasked', 'Webhook(掩码)'], ['bindings', '绑定事件'], ['intro', '群介绍(含监管邮箱)']], g.groups, { enabled: v => v ? '是' : '否', kind: v => KC[v] || v, bindings: v => (v || []).map(x => EVENT_CN[x] || x).join('、') });
+    h += `<div class="card"><h4>新增/修改群（操作员·免决议）</h4>
+    <div class="row"><input id="ngId" placeholder="群ID G-COMPANY"><input id="ngName" placeholder="群名称"><select id="ngKind">${Object.entries(KC).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><input id="ngDept" placeholder="部门(部门群填)"></div>
+    <div class="row"><input id="ngHook" placeholder="https://qyapi.weixin.qq.com/… 或 oapi.dingtalk.com/… 或 open.feishu.cn/…" style="flex:1"></div>
+    <div class="row"><input id="ngBind" placeholder="绑定事件类型,逗号分隔 如 ResolutionRecorded,PayrollRun" style="flex:1"><label><input type="checkbox" id="ngOn" checked>启用</label><button onclick="saveGroup()">保存群设置</button></div>
+    <div class="row"><input type="file" id="ngFile"><span class="hint">依据附件（配置留痕）</span></div><p id="ngMsg" class="msg"></p></div>`;
     h += `<h3>推送留痕（最近100）</h3>` + table([['log_id', '留痕'], ['group_id', '群'], ['event_type', '事件'], ['level', '分级'], ['digest', '摘要模式'], ['status', '状态'], ['sent_at', '时间']], logs, { event_type: v => EVENT_CN[v] || v, digest: v => v ? '是' : '否' });
     $('tabBody').innerHTML = h;
   },
   async report() {
-    const [rs, mine] = await Promise.all([api('/api/complaints'), api('/api/my-complaints')]);
+    const rs = await api('/api/complaints');
     const CAT = { Embezzlement: '挪用侵占', Fraud: '舞弊造假', RelatedPartyTransfer: '关联利益输送', ConflictOfInterest: '利益冲突', AbuseOfPower: '滥用职权', Other: '其他' };
     const OUT = { Substantiated: '属实', PartiallySubstantiated: '部分属实', Unsubstantiated: '不属实' };
     const ST = { Open: '待调查', Investigating: '调查中', Closed: '已办结' };
-    let h = `<h2>举报通道</h2><p class="muted">公司任何账号均可举报（支持匿名）。举报直送监事群；监事调查（ReportInvestigated）、办结走 ReportHandling 决议（ReportClosed）。匿名举报界面掩码，身份仅授权审计可溯；打击报复举报人本身可再举报。</p>
-    <h3>举报列表（治理成员可见·匿名掩码）</h3>` + table([['report_id', '编号'], ['category', '类别'], ['target', '对象'], ['status', '状态'], ['outcome', '结论'], ['reporter', '举报人']], rs, { category: v => CAT[v] || v, status: v => ST[v] || v, outcome: v => OUT[v] || v || '' });
-    h += `<h3>我的举报</h3>` + table([['report_id', '编号'], ['category', '类别'], ['target', '对象'], ['status', '状态'], ['outcome', '结论']], mine, { category: v => CAT[v] || v, status: v => ST[v] || v, outcome: v => OUT[v] || v || '' });
-    h += `<p class="hint">提交入口：事件提交 → ReportFiled（类别/对象/描述/匿名开关，依据可选）；属实办结自动生成整改待办。</p>`;
+    let h = `<h2>举报处理</h2><p class="muted">本系统不开放员工/部门主管登录（公司机密），举报走<b>监管邮箱</b>（地址见群通知页各群介绍，多个高层共同监督登录）。被举报≠违规：操作员作为铁面判官登记转来材料（ReportFiled）→监事/操作员调查取证（ReportInvestigated）→决议认定问责（ReportClosed·ReportHandling 决议）→属实自动整改待办；<b>情节严重（Serious）通告公司群/董事会群/监事群</b>。</p>
+    <h3>举报处理列表</h3>` + table([['report_id', '编号'], ['category', '类别'], ['target', '对象'], ['source', '来源'], ['severity', '情节'], ['status', '状态'], ['outcome', '结论'], ['investigated_by', '调查人'], ['reporter', '登记渠道']], rs, { category: v => CAT[v] || v, status: v => ST[v] || v, outcome: v => OUT[v] || v || '', severity: v => v === 'Serious' ? '严重' : '一般', source: v => v === 'Mailbox' ? '监管邮箱' : v });
+    h += `<div class="card"><h4>登记举报材料（操作员）</h4>
+    <div class="row"><input id="rpId" placeholder="编号 RP-1(可空自动)"><select id="rpCat">${Object.entries(CAT).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><select id="rpSrc"><option value="Mailbox">监管邮箱转来</option><option value="Other">其他渠道</option></select></div>
+    <div class="row"><input id="rpTarget" placeholder="被举报对象"><input id="rpDesc" placeholder="情况描述（线索/材料摘要）" style="flex:1"></div>
+    <div class="row"><input type="file" id="rpFile"><button onclick="fileReport()">登记入链</button></div><p id="rpMsg" class="msg"></p></div>
+    <div class="card"><h4>调查取证（监事/操作员）</h4>
+    <div class="row"><input id="riId" placeholder="举报编号"><input id="riFind" placeholder="调查结论与取证情况" style="flex:1"></div>
+    <div class="row"><input type="file" id="riFile"><button onclick="investReport()">提交调查</button></div><p id="riMsg" class="msg"></p></div>
+    <div class="card"><h4>认定办结（操作员·ReportHandling 决议）</h4>
+    <div class="row"><input id="rcId" placeholder="举报编号"><input id="rcRes" placeholder="决议编号"><select id="rcOut"><option value="Substantiated">属实</option><option value="PartiallySubstantiated">部分属实</option><option value="Unsubstantiated">不属实</option></select><select id="rcSev"><option value="General">一般</option><option value="Serious">严重(群通告)</option></select></div>
+    <div class="row"><input id="rcAct" placeholder="问责/整改/移送等处置" style="flex:1"><input type="file" id="rcFile"><button onclick="closeReport()">办结</button></div><p id="rcMsg" class="msg"></p></div>`;
+    $('tabBody').innerHTML = h;
+  },
+  async ip() {
+    const [ips, ias] = await Promise.all([api('/api/ip-rights'), api('/api/intangibles')]);
+    const IC = { Patent: '专利权', Trademark: '商标权', Copyright: '著作权', TechSecret: '技术产权', DataRight: '数据相关权益', Franchise: '经营权利', Other: '其他产权' };
+    let h = `<h2>知识产权双账簿</h2><p class="muted">产权档案记录实际拥有/控制/申请中的产权与商业价值；无形资产会计账簿只记符合 CAS6 确认条件（可辨认性+经济利益流入+成本可靠计量）的资产。<b>产权价值≠会计账面价值</b>：自研软件市场值数百万不等于可直接入账。摊销直线法按月自动、减值/处置自动结转、90 天内到期/续费自动提醒。</p>
+    <h3>产权档案（含关联账面）</h3>` + table([['ip_id', '编号'], ['name', '名称'], ['category', '类别'], ['reg_no', '产权号'], ['owner_party', '权利人'], ['controller', '实际控制'], ['acquire_mode', '取得方式'], ['cost', '原始成本'], ['appraised_value', '评估价值'], ['valid_until', '有效期'], ['renew_date', '续费日'], ['status', '状态'], ['linked_asset_id', '关联资产'], ['book_value', '会计账面']], ips, { category: v => IC[v] || v });
+    h += `<h3>无形资产会计账簿</h3>` + table([['asset_id', '资产'], ['ip_id', '关联产权'], ['name', '名称'], ['cost', '成本'], ['life_months', '寿命月'], ['accumulated_amort', '累计摊销'], ['impairment', '减值准备'], ['book_value', '账面价值'], ['status', '状态']], ias, {});
+    h += `<div class="card"><h4>建立产权档案（操作员）</h4>
+    <div class="row"><input id="ipId" placeholder="IP-1(可空)"><input id="ipName" placeholder="产权名称"><select id="ipCat">${Object.entries(IC).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><input id="ipNo" placeholder="专利号/商标号/登记号"></div>
+    <div class="row"><input id="ipOwner" placeholder="权利人 partyId"><input id="ipCtrl" placeholder="实际控制主体"><input id="ipMode" placeholder="取得方式(自研/受让/许可)"><input id="ipAd" placeholder="取得日期 YYYY-MM-DD"></div>
+    <div class="row"><input id="ipCost" placeholder="原始成本"><input id="ipFees" placeholder="相关费用"><input id="ipVu" placeholder="有效期 YYYY-MM-DD"><input id="ipRd" placeholder="续费日 YYYY-MM-DD"></div>
+    <div class="row"><input type="file" id="ipFile"><span class="hint">证书/合同/登记文件</span><button onclick="regIp()">建档</button></div><p id="ipMsg" class="msg"></p></div>
+    <div class="card"><h4>流转/争议/续费记录</h4>
+    <div class="row"><input id="irId" placeholder="产权编号"><select id="irKind"><option value="Transfer">转让</option><option value="License">授权许可</option><option value="Pledge">质押</option><option value="Dispute">争议</option><option value="Litigation">诉讼</option><option value="Renewal">续费</option><option value="StatusChange">状态变更</option><option value="Other">其他</option></select></div>
+    <div class="row"><textarea id="irDetail" placeholder='detail JSON 如 {"counterparty":"…","amount":10000} 或续费 {"validUntil":"2028-01-01"}' style="flex:1"></textarea></div>
+    <div class="row"><input type="file" id="irFile"><button onclick="ipRecord()">追加记录</button><button class="ghost" onclick="ipValueForm()">评估登记</button></div><p id="irMsg" class="msg"></p></div>
+    <div class="card"><h4>会计确认/摊销/减值/处置</h4>
+    <div class="row"><input id="icIp" placeholder="产权编号"><input id="icCost" placeholder="入账成本"><input id="icLife" placeholder="寿命月"><select id="icPay"><option value="Bank">银行付</option><option value="AP">应付</option></select></div>
+    <div class="row"><label><input type="checkbox" id="icC1">可辨认性</label><label><input type="checkbox" id="icC2">经济利益流入</label><label><input type="checkbox" id="icC3">成本可靠计量</label><input type="file" id="icFile"><button onclick="ipCap()">确认入账</button></div>
+    <div class="row"><input id="iaPeriod" placeholder="摊销期间 YYYY-MM"><button onclick="ipAmort()">月度摊销(自动计算)</button><input id="iiId" placeholder="减值资产ID"><input id="iiAmt" placeholder="减值额"><button onclick="ipImpair()">减值</button></div>
+    <div class="row"><input id="idId" placeholder="处置资产ID"><input id="idProc" placeholder="处置收入"><button onclick="ipDispose()">处置</button><input type="file" id="iaFile"><span class="hint">摊销/减值/处置依据</span></div><p id="iaMsg" class="msg"></p></div>
+    <div id="ipDetailBox"></div>`;
+    $('tabBody').innerHTML = h;
+  },
+  async esop() {
+    const [ps, vds] = await Promise.all([api('/api/esop-plans'), api('/api/esop-dividends')]);
+    const FC = { DirectTransfer: '直接受让老股', CapitalIncrease: '增资认购', Platform: '持股平台间接', Option: '期权', Virtual: '虚拟分红权' };
+    const ST = { Applied: '已申请', Reviewed: '审核通过', Rejected: '已驳回', Granted: '已授予', Exercised: '行权完毕', Exited: '已退出' };
+    let h = `<h2>员工持股与股权激励中心</h2><p class="muted">五形式分离管理，不混称实际股权：直接受让/增资认购/持股平台间接/期权（归属后行权才成股东）/虚拟分红权（仅经济权益·非股东）。自愿申请≠不经公司程序取得股权；公司授予≠自动完成法律变更（以股东名册/工商登记为准）。增资原股东优先认缴权由决议载明。<b>股权权利、岗位权限、系统操作权限分别管理</b>；股东知情查阅凭股东角色账号依法保障。上市公司员工持股须另遵专门规则，本流程适用有限责任公司。</p>
+    <h3>持股计划</h3>` + table([['plan_id', '计划'], ['employee_id', '员工'], ['form', '形式'], ['status', '状态'], ['quantity', '数量'], ['ratio', '比例'], ['price', '价格'], ['granted_qty', '已授予'], ['vested_qty', '已归属'], ['exercised_qty', '已行权'], ['sbc_expense', '股份支付费用']], ps, { form: v => FC[v] || v, status: v => ST[v] || v });
+    h += `<h3>虚拟分红宣告/支付</h3>` + table([['id', '编号'], ['plan_id', '计划'], ['period', '期间'], ['amount', '金额'], ['status', '状态']], vds, {});
+    h += `<div class="card"><h4>入股申请/激励方案（操作员代录）</h4>
+    <div class="row"><input id="esId" placeholder="ESOP-1(可空)"><input id="esEm" placeholder="员工ID"><select id="esForm">${Object.entries(FC).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><select id="esOrigin"><option value="Voluntary">员工自愿</option><option value="CompanyGrant">公司激励</option></select></div>
+    <div class="row"><input id="esQty" placeholder="数量(注册资本额/股数)"><input id="esRatio" placeholder="比例(0,1)虚拟/平台用"><input id="esPrice" placeholder="价格/行权价"><input id="esPP" placeholder="持股平台 partyId"></div>
+    <div class="row"><textarea id="esVest" placeholder='归属条件 JSON 如 {"serviceYears":3,"kpi":"…"}' style="flex:1"></textarea></div>
+    <div class="row"><input type="file" id="esFile"><button onclick="esopApply()">提交申请</button></div><p id="esMsg" class="msg"></p></div>
+    <div class="card"><h4>资格审核 / 决议授予</h4>
+    <div class="row"><input id="erId" placeholder="计划编号"><select id="erRes"><option value="Approved">通过</option><option value="Rejected">驳回</option></select><input id="erTxt" placeholder="审核意见(章程/决议/法律程序)" style="flex:1"><input type="file" id="erFile"><button onclick="esopReview()">审核</button></div>
+    <div class="row"><input id="egId" placeholder="计划编号"><input id="egRes" placeholder="EsopPlan 决议号"><input id="egConfirm" placeholder="员工确认凭据引用"><input id="egFrom" placeholder="出让股东(直接受让)"><input id="egContract" placeholder="合同ID(直接受让)"><input id="egPrice" placeholder="受让对价"></div>
+    <div class="row"><input type="file" id="egFile"><button onclick="esopGrant()">授予</button></div><p id="egMsg" class="msg"></p></div>
+    <div class="card"><h4>归属 / 行权 / 退出</h4>
+    <div class="row"><input id="evId" placeholder="计划编号"><input id="evQty" placeholder="归属数量"><input id="evFv" placeholder="授予日公允价值/股"><label><input type="checkbox" id="evMet">条件满足</label><input type="file" id="evFile"><button onclick="esopVest()">归属</button></div>
+    <div class="row"><input id="exId" placeholder="计划编号"><input id="exRes" placeholder="EsopExercise 决议号"><input id="exQty" placeholder="行权数量"><input type="file" id="exFile"><button onclick="esopExercise()">行权</button></div>
+    <div class="row"><input id="eeId" placeholder="计划编号"><input id="eeRes" placeholder="EsopExit 决议号"><input id="eeCap" placeholder="实股退出注册资本额"><input type="file" id="eeFile"><button onclick="esopExit()">离职/退出</button></div><p id="exMsg" class="msg"></p></div>
+    <div class="card"><h4>虚拟分红（奖金性质费用化）</h4>
+    <div class="row"><input id="vdId" placeholder="VD-1(可空)"><input id="vdPlan" placeholder="计划编号"><input id="vdRes" placeholder="VirtualDividend 决议号"><input id="vdAmt" placeholder="金额"><input type="file" id="vdFile"><button onclick="vdDeclare()">宣告</button></div>
+    <div class="row"><input id="vpId" placeholder="宣告编号"><input id="vpAmt" placeholder="支付额"><input type="file" id="vpFile"><button onclick="vpPaid()">支付</button></div><p id="vdMsg" class="msg"></p></div>
+    <div class="card"><h4>权益查询（知情查阅）</h4><div class="row"><input id="epEm" placeholder="员工ID"><button onclick="esopPos()">查询</button></div><div id="epBox"></div></div>`;
     $('tabBody').innerHTML = h;
   },
   async contract() {
@@ -558,6 +628,135 @@ async function uploadEvidence() {
   evEvidence.push({ name: j.fileName, hash: j.hash });
   $('evList').innerHTML = evEvidence.map(e => `✓ ${esc(e.name)} <code>${e.hash.slice(0, 16)}…</code>`).join('<br>');
 }
+async function evPost(type, payload, resNo, fileId, msgId) {
+  const f = $(fileId)?.files?.[0];
+  if (!f) { $(msgId).className = 'msg err'; $(msgId).textContent = '请先选择依据附件（凡变更必有依据）'; return null; }
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/evidence', { method: 'POST', headers: { 'Authorization': 'Bearer ' + TOKEN }, body: fd });
+  const j = await r.json(); if (!r.ok) throw new Error(j.error);
+  return api('/api/events', 'POST', { type, resolutionNo: resNo || null, payload, evidence: [{ name: j.fileName, hash: j.hash }] });
+}
+async function setSupEmail() {
+  try { await evPost('SupervisionEmailSet', { email: $('grpEmail').value }, null, 'ngFile', 'ngMsg'); openTab('groups'); }
+  catch (e) { $('ngMsg').className = 'msg err'; $('ngMsg').textContent = e.message; }
+}
+async function saveGroup() {
+  try {
+    await evPost('NotifyGroupConfigured', {
+      groupId: $('ngId').value, name: $('ngName').value, kind: $('ngKind').value, department: $('ngDept').value,
+      webhook: $('ngHook').value, enabled: $('ngOn').checked,
+      bindings: $('ngBind').value.split(',').map(s => s.trim()).filter(Boolean)
+    }, null, 'ngFile', 'ngMsg');
+    openTab('groups');
+  } catch (e) { $('ngMsg').className = 'msg err'; $('ngMsg').textContent = e.message; }
+}
+async function fileReport() {
+  try { await evPost('ReportFiled', { reportId: $('rpId').value, category: $('rpCat').value, target: $('rpTarget').value, description: $('rpDesc').value, source: $('rpSrc').value }, null, 'rpFile', 'rpMsg'); openTab('report'); }
+  catch (e) { $('rpMsg').className = 'msg err'; $('rpMsg').textContent = e.message; }
+}
+async function investReport() {
+  try { await evPost('ReportInvestigated', { reportId: $('riId').value, findings: $('riFind').value }, null, 'riFile', 'riMsg'); openTab('report'); }
+  catch (e) { $('riMsg').className = 'msg err'; $('riMsg').textContent = e.message; }
+}
+async function closeReport() {
+  try { await evPost('ReportClosed', { reportId: $('rcId').value, outcome: $('rcOut').value, severity: $('rcSev').value, action: $('rcAct').value }, $('rcRes').value, 'rcFile', 'rcMsg'); openTab('report'); }
+  catch (e) { $('rcMsg').className = 'msg err'; $('rcMsg').textContent = e.message; }
+}
+async function regIp() {
+  try {
+    await evPost('IpRegistered', {
+      ipId: $('ipId').value, name: $('ipName').value, category: $('ipCat').value, regNo: $('ipNo').value,
+      ownerParty: $('ipOwner').value, controller: $('ipCtrl').value, acquireMode: $('ipMode').value, acquireDate: $('ipAd').value,
+      cost: +$('ipCost').value || 0, fees: +$('ipFees').value || 0, validUntil: $('ipVu').value, renewDate: $('ipRd').value
+    }, null, 'ipFile', 'ipMsg');
+    openTab('ip');
+  } catch (e) { $('ipMsg').className = 'msg err'; $('ipMsg').textContent = e.message; }
+}
+async function ipRecord() {
+  try { await evPost('IpRecordAdded', { ipId: $('irId').value, kind: $('irKind').value, detail: JSON.parse($('irDetail').value || '{}') }, null, 'irFile', 'irMsg'); openTab('ip'); }
+  catch (e) { $('irMsg').className = 'msg err'; $('irMsg').textContent = e.message; }
+}
+function ipValueForm() {
+  const id = prompt('产权编号：'); if (!id) return;
+  const v = prompt('评估价值：'); if (v === null) return;
+  const rep = prompt('评估报告引用：'); if (!rep) return;
+  const f = $('irFile').files[0];
+  if (!f) { $('irMsg').className = 'msg err'; $('irMsg').textContent = '请先选择依据附件'; return; }
+  const fd = new FormData(); fd.append('file', f);
+  fetch('/api/evidence', { method: 'POST', headers: { 'Authorization': 'Bearer ' + TOKEN }, body: fd }).then(r => r.json()).then(j =>
+    api('/api/events', 'POST', { type: 'IpValued', payload: { ipId: id, appraisedValue: +v, appraisalReport: rep }, evidence: [{ name: j.fileName, hash: j.hash }] }))
+    .then(() => openTab('ip')).catch(e => { $('irMsg').className = 'msg err'; $('irMsg').textContent = e.message; });
+}
+async function ipCap() {
+  try {
+    await evPost('IpCapitalized', {
+      ipId: $('icIp').value, cost: +$('icCost').value || 0, lifeMonths: +$('icLife').value || 0, payMode: $('icPay').value,
+      criteria: { identifiable: $('icC1').checked, economicBenefits: $('icC2').checked, costReliable: $('icC3').checked }
+    }, null, 'icFile', 'iaMsg');
+    openTab('ip');
+  } catch (e) { $('iaMsg').className = 'msg err'; $('iaMsg').textContent = e.message; }
+}
+async function ipAmort() {
+  try { await evPost('IpAmortizationRun', { period: $('iaPeriod').value }, null, 'iaFile', 'iaMsg'); openTab('ip'); }
+  catch (e) { $('iaMsg').className = 'msg err'; $('iaMsg').textContent = e.message; }
+}
+async function ipImpair() {
+  try { await evPost('IpImpaired', { assetId: $('iiId').value, amount: +$('iiAmt').value || 0 }, null, 'iaFile', 'iaMsg'); openTab('ip'); }
+  catch (e) { $('iaMsg').className = 'msg err'; $('iaMsg').textContent = e.message; }
+}
+async function ipDispose() {
+  try { await evPost('IpDisposed', { assetId: $('idId').value, proceeds: +$('idProc').value || 0 }, null, 'iaFile', 'iaMsg'); openTab('ip'); }
+  catch (e) { $('iaMsg').className = 'msg err'; $('iaMsg').textContent = e.message; }
+}
+async function esopApply() {
+  try {
+    await evPost('EsopApplied', {
+      planId: $('esId').value, employeeId: $('esEm').value, form: $('esForm').value, origin: $('esOrigin').value,
+      quantity: +$('esQty').value || 0, ratio: +$('esRatio').value || 0, price: +$('esPrice').value || 0,
+      platformParty: $('esPP').value, vesting: JSON.parse($('esVest').value || '{}')
+    }, null, 'esFile', 'esMsg');
+    openTab('esop');
+  } catch (e) { $('esMsg').className = 'msg err'; $('esMsg').textContent = e.message; }
+}
+async function esopReview() {
+  try { await evPost('EsopReviewed', { planId: $('erId').value, result: $('erRes').value, review: $('erTxt').value }, null, 'erFile', 'esMsg'); openTab('esop'); }
+  catch (e) { $('esMsg').className = 'msg err'; $('esMsg').textContent = e.message; }
+}
+async function esopGrant() {
+  try {
+    await evPost('EsopGranted', {
+      planId: $('egId').value, confirmRef: $('egConfirm').value, fromParty: $('egFrom').value,
+      contractId: $('egContract').value, price: +$('egPrice').value || 0
+    }, $('egRes').value, 'egFile', 'egMsg');
+    openTab('esop');
+  } catch (e) { $('egMsg').className = 'msg err'; $('egMsg').textContent = e.message; }
+}
+async function esopVest() {
+  try { await evPost('EsopVested', { planId: $('evId').value, quantity: +$('evQty').value || 0, fairValue: +$('evFv').value || 0, conditionsMet: $('evMet').checked }, null, 'evFile', 'exMsg'); openTab('esop'); }
+  catch (e) { $('exMsg').className = 'msg err'; $('exMsg').textContent = e.message; }
+}
+async function esopExercise() {
+  try { await evPost('EsopExercised', { planId: $('exId').value, quantity: +$('exQty').value || 0 }, $('exRes').value, 'exFile', 'exMsg'); openTab('esop'); }
+  catch (e) { $('exMsg').className = 'msg err'; $('exMsg').textContent = e.message; }
+}
+async function esopExit() {
+  try { await evPost('EsopExited', { planId: $('eeId').value, capitalAmount: +$('eeCap').value || 0 }, $('eeRes').value, 'eeFile', 'exMsg'); openTab('esop'); }
+  catch (e) { $('exMsg').className = 'msg err'; $('exMsg').textContent = e.message; }
+}
+async function vdDeclare() {
+  try { await evPost('VirtualDividendDeclared', { dividendId: $('vdId').value, planId: $('vdPlan').value, amount: +$('vdAmt').value || 0 }, $('vdRes').value, 'vdFile', 'vdMsg'); openTab('esop'); }
+  catch (e) { $('vdMsg').className = 'msg err'; $('vdMsg').textContent = e.message; }
+}
+async function vpPaid() {
+  try { await evPost('VirtualDividendPaid', { dividendId: $('vpId').value, amount: +$('vpAmt').value || 0 }, null, 'vpFile', 'vdMsg'); openTab('esop'); }
+  catch (e) { $('vdMsg').className = 'msg err'; $('vdMsg').textContent = e.message; }
+}
+async function esopPos() {
+  try {
+    const j = await api('/api/esop-positions?employeeId=' + encodeURIComponent($('epEm').value));
+    $('epBox').innerHTML = `<p class="hint">${esc(j.note)}</p>` + table([['plan_id', '计划'], ['form', '形式'], ['status', '状态'], ['granted_qty', '授予'], ['vested_qty', '归属'], ['exercised_qty', '行权']], j.plans, {}) + `<p class="muted">实股（直接/增资）：` + esc(JSON.stringify(j.direct)) + `</p>`;
+  } catch (e) { $('epBox').innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+}
 async function submitEvent() {
   try {
     const j = await api('/api/events', 'POST', { type: $('evType').value, resolutionNo: $('evRes').value || null, payload: JSON.parse($('evPayload').value), evidence: evEvidence });
@@ -694,9 +893,25 @@ const TEMPLATES = {
   TaxReturnFiled: { period: '2026-11', kind: 'VAT', amount: 0, detail: {} },
   TaxPaid: { period: '2026-11', kind: 'VAT', amount: 0 },
   NotifyGroupConfigured: { groupId: 'G-BOARD', name: '董事会群', kind: 'board', department: '', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=示例', enabled: true, bindings: ['ResolutionRecorded', 'PurchasePaymentApproved', 'LoanRepaid', 'PeriodClosed'] },
-  ReportFiled: { reportId: 'RP-1', category: 'Embezzlement', target: '张三', description: '疑似挪用备用金，附线索说明', anonymous: true },
-  ReportInvestigated: { reportId: 'RP-1', findings: '调取银行流水与凭证核对，情况属实' },
-  ReportClosed: { reportId: 'RP-1', outcome: 'Substantiated', action: '责令退还款项并移送司法' },
+  ReportFiled: { reportId: 'RP-1', category: 'Embezzlement', target: '张三', description: '监管邮箱转来线索：疑似挪用备用金', source: 'Mailbox' },
+  ReportInvestigated: { reportId: 'RP-1', findings: '调取银行流水与凭证，核实挪用事实/或证据不足' },
+  ReportClosed: { reportId: 'RP-1', outcome: 'Substantiated', severity: 'Serious', action: '追偿+移送司法/整改' },
+  SupervisionEmailSet: { email: 'supervision@company.com' },
+  IpRegistered: { ipId: 'IP-1', name: '玄铁栈道治理系统软件', category: 'Copyright', regNo: '软著登字第X号', ownerParty: 'p-company', controller: '本公司', acquireMode: '自研', acquireDate: '2026-01-01', cost: 80000, fees: 3000, validUntil: '2076-01-01', renewDate: '' },
+  IpRecordAdded: { ipId: 'IP-1', kind: 'License', detail: { counterparty: 'p-client', amount: 50000, scope: '非独占许可' } },
+  IpValued: { ipId: 'IP-1', appraisedValue: 3000000, appraisalReport: 'EV-2026-01' },
+  IpCapitalized: { ipId: 'IP-1', cost: 80000, lifeMonths: 120, payMode: 'Bank', criteria: { identifiable: true, economicBenefits: true, costReliable: true } },
+  IpAmortizationRun: { period: '2026-11' },
+  IpImpaired: { assetId: 'IA-1', amount: 10000 },
+  IpDisposed: { assetId: 'IA-1', proceeds: 50000 },
+  EsopApplied: { planId: 'ESOP-1', employeeId: 'e1', form: 'Option', origin: 'CompanyGrant', quantity: 10000, price: 1, vesting: { serviceYears: 3 } },
+  EsopReviewed: { planId: 'ESOP-1', result: 'Approved', review: '章程与股东决议合规，资格通过' },
+  EsopGranted: { planId: 'ESOP-1', confirmRef: 'CONF-1', fromParty: '', contractId: '', price: 0 },
+  EsopVested: { planId: 'ESOP-1', quantity: 4000, fairValue: 2, conditionsMet: true },
+  EsopExercised: { planId: 'ESOP-1', quantity: 4000 },
+  EsopExited: { planId: 'ESOP-1', capitalAmount: 0 },
+  VirtualDividendDeclared: { dividendId: 'VD-1', planId: 'ESOP-V', amount: 20000 },
+  VirtualDividendPaid: { dividendId: 'VD-1', amount: 20000 },
   EmployeeShareSubscription: { employeeId: 'E1', subscribed: 100000 },
   EmployeeShareGranted: { employeeId: 'E1', capitalAmount: 50000, source: 'ShareholderGift', fromParty: 'alice' },
   BonusGranted: { employeeId: 'e1', amount: 2000, reason: '月度突出贡献', period: '2026-11' },

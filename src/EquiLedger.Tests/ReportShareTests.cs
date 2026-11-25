@@ -7,7 +7,7 @@ using Xunit;
 
 namespace EquiLedger.Tests;
 
-/// <summary>举报通道（任何角色含匿名/监事调查/决议办结）与员工入股/公司分股；每步重放验真。</summary>
+/// <summary>举报处理（监管邮箱转来→操作员登记→监事/操作员调查→决议认定→严重群通告）与员工入股/公司分股；每步重放验真。</summary>
 public class ReportShareTests : IAsyncLifetime
 {
     private readonly Fixture _f = new();
@@ -15,34 +15,54 @@ public class ReportShareTests : IAsyncLifetime
     public Task DisposeAsync() => _f.DisposeAsync();
 
     [Fact]
-    public async Task 举报匿名任何角色与监事闭环()
+    public async Task 举报处理操作员登记与监事闭环()
     {
         await _f.Found();
-        await _f.Submit("ReportFiled", "alice", null, new JsonObject
+        var notOp = await _f.SubmitFails("ReportFiled", "alice", null, new JsonObject
+        {
+            ["reportId"] = "RP-0", ["category"] = "Embezzlement", ["target"] = "张三", ["description"] = "x", ["source"] = "Mailbox"
+        }, Fixture.Ev("线索"));
+        Assert.Equal("NotOperator", notOp.Kind);
+        await _f.Submit("ReportFiled", "op", null, new JsonObject
         {
             ["reportId"] = "RP-1", ["category"] = "Embezzlement", ["target"] = "张三",
-            ["description"] = "疑似挪用备用金", ["anonymous"] = true
-        }, Fixture.Ev("线索材料"));
-        var r = (await _f.Rows("SELECT reporter,reporter_actor,status FROM proj.reports WHERE report_id='RP-1'"))[0];
-        Assert.Equal("匿名", r["reporter"]);
-        Assert.Equal("alice", r["reporter_actor"]);
-        await _f.Submit("ReportFiled", "sup", null, new JsonObject
-        {
-            ["reportId"] = "RP-2", ["category"] = "AbuseOfPower", ["target"] = "李四",
-            ["description"] = "违规审批", ["anonymous"] = false
-        });
-        Assert.Equal("sup", (await _f.Rows("SELECT reporter FROM proj.reports WHERE report_id='RP-2'"))[0]["reporter"]);
-        var denied = await _f.SubmitFails("ReportInvestigated", "op", null, new JsonObject { ["reportId"] = "RP-1", ["findings"] = "x" });
-        Assert.Equal("RoleDenied", denied.Kind);
-        await _f.Submit("ReportInvestigated", "sup", null, new JsonObject { ["reportId"] = "RP-1", ["findings"] = "流水核对属实" });
-        await _f.RecordResolution("R-RP", "ReportHandling", new JsonObject { ["reportId"] = "RP-1", ["outcome"] = "Substantiated" });
-        await _f.Submit("ReportClosed", "op", "R-RP", new JsonObject { ["reportId"] = "RP-1", ["outcome"] = "Substantiated", ["action"] = "责令退还并移送司法" });
-        Assert.Equal("Closed", (await _f.Rows("SELECT status FROM proj.reports WHERE report_id='RP-1'"))[0]["status"]);
+            ["description"] = "监管邮箱转来：疑似挪用备用金", ["source"] = "Mailbox"
+        }, Fixture.Ev("监管邮箱邮件打印件"));
+        var r = (await _f.Rows("SELECT reporter,reporter_actor,status,source FROM proj.reports WHERE report_id='RP-1'"))[0];
+        Assert.Equal("监管邮箱转来", r["reporter"]);
+        Assert.Equal("op", r["reporter_actor"]);
+        Assert.Equal("Mailbox", r["source"]);
+        await _f.Submit("ReportInvestigated", "sup", null, new JsonObject { ["reportId"] = "RP-1", ["findings"] = "流水核对属实" }, Fixture.Ev("银行流水"));
+        Assert.Equal("sup", (await _f.Rows("SELECT investigated_by FROM proj.reports WHERE report_id='RP-1'"))[0]["investigated_by"]);
+        await _f.RecordResolution("R-RP", "ReportHandling", new JsonObject { ["reportId"] = "RP-1", ["outcome"] = "Substantiated", ["severity"] = "Serious" });
+        await _f.Submit("ReportClosed", "op", "R-RP", new JsonObject { ["reportId"] = "RP-1", ["outcome"] = "Substantiated", ["severity"] = "Serious", ["action"] = "责令退还并移送司法" });
+        var closed = (await _f.Rows("SELECT status,severity FROM proj.reports WHERE report_id='RP-1'"))[0];
+        Assert.Equal("Closed", closed["status"]);
+        Assert.Equal("Serious", closed["severity"]);
         Assert.True((await _f.Verifier.Verify()).Ok);
         var (lvl, kinds) = NotifyPolicy.Classify("ReportFiled", new JsonObject());
         Assert.Contains("supervisor", kinds);
         Assert.DoesNotContain("staff", kinds);
-        Assert.DoesNotContain("company", kinds);
+        var (_, closedKinds) = NotifyPolicy.Classify("ReportClosed", new JsonObject { ["severity"] = "Serious" });
+        Assert.Contains("company", closedKinds);
+    }
+
+    [Fact]
+    public async Task 群设置操作员直设与监管邮箱()
+    {
+        await _f.Found();
+        await _f.Submit("NotifyGroupConfigured", "op", null, new JsonObject
+        {
+            ["groupId"] = "G-COMP", ["name"] = "公司群", ["kind"] = "company", ["department"] = "",
+            ["webhook"] = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t", ["enabled"] = true,
+            ["bindings"] = new JsonArray("ResolutionRecorded")
+        }, Fixture.Ev("群配置留痕"));
+        Assert.Equal(1, await _f.ScalarD("SELECT COUNT(*) FROM proj.notify_groups WHERE group_id='G-COMP'"));
+        await _f.Submit("SupervisionEmailSet", "op", null, new JsonObject { ["email"] = "supervision@company.com" }, Fixture.Ev("高层共管授权"));
+        Assert.Equal("supervision@company.com", (await _f.Rows("SELECT supervision_email FROM proj.company WHERE id=1"))[0]["supervision_email"]);
+        var bad = await _f.SubmitFails("SupervisionEmailSet", "op", null, new JsonObject { ["email"] = "not-an-email" }, Fixture.Ev("x"));
+        Assert.Equal("BadParams", bad.Kind);
+        Assert.True((await _f.Verifier.Verify()).Ok);
     }
 
     [Fact]

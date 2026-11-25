@@ -496,3 +496,55 @@ INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_bal
  ('InterestExpense','5603-INT','财务费用-利息支出','pl_expense','debit','债权人'),
  ('IncomeTaxExpense','5801','所得税费用','pl_expense','debit','')
 ON CONFLICT (account_key) DO NOTHING;
+
+-- ============ 群设置操作员直设 / 监管邮箱 / 举报处理 ============
+ALTER TABLE proj.company ADD COLUMN IF NOT EXISTS supervision_email TEXT NOT NULL DEFAULT '';
+ALTER TABLE proj.reports ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Mailbox';
+ALTER TABLE proj.reports ADD COLUMN IF NOT EXISTS severity TEXT NOT NULL DEFAULT 'General';
+ALTER TABLE proj.reports ADD COLUMN IF NOT EXISTS evidence_refs JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE proj.reports ADD COLUMN IF NOT EXISTS investigated_by TEXT;
+
+-- ============ 知识产权档案 + 无形资产会计双账簿 ============
+CREATE TABLE IF NOT EXISTS proj.ip_rights (
+    ip_id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, reg_no TEXT,
+    owner_party TEXT NOT NULL, controller TEXT, acquire_mode TEXT, acquire_date DATE,
+    cert_refs JSONB NOT NULL DEFAULT '[]', cost NUMERIC(19,4) NOT NULL DEFAULT 0, fees NUMERIC(19,4) NOT NULL DEFAULT 0,
+    appraised_value NUMERIC(19,4), appraisal_report TEXT,
+    valid_until DATE, renew_date DATE, status TEXT NOT NULL DEFAULT 'Active',
+    linked_asset_id TEXT, history JSONB NOT NULL DEFAULT '[]', source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.ip_events_log (
+    log_id TEXT PRIMARY KEY, ip_id TEXT NOT NULL, kind TEXT NOT NULL, detail JSONB NOT NULL, memo TEXT, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.intangible_assets (
+    asset_id TEXT PRIMARY KEY, ip_id TEXT, name TEXT NOT NULL, cost NUMERIC(19,4) NOT NULL,
+    life_months INT NOT NULL, accumulated_amort NUMERIC(19,4) NOT NULL DEFAULT 0, impairment NUMERIC(19,4) NOT NULL DEFAULT 0,
+    recognized_date DATE NOT NULL, criteria JSONB NOT NULL, status TEXT NOT NULL DEFAULT 'Active', source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.amort_runs (
+    period CHAR(7) PRIMARY KEY, total NUMERIC(19,4) NOT NULL, lines JSONB NOT NULL, source_event_id UUID NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE ON proj.ip_rights, proj.ip_events_log, proj.intangible_assets, proj.amort_runs TO equi_app;
+
+-- ============ 员工持股与股权激励中心（五形式分离） ============
+CREATE TABLE IF NOT EXISTS proj.esop_plans (
+    plan_id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, form TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Applied',
+    quantity NUMERIC(19,4) NOT NULL DEFAULT 0, ratio NUMERIC(9,6) NOT NULL DEFAULT 0, price NUMERIC(19,4) NOT NULL DEFAULT 0,
+    platform_party TEXT, vesting JSONB NOT NULL DEFAULT '{}', review TEXT, confirm_ref TEXT,
+    granted_qty NUMERIC(19,4) NOT NULL DEFAULT 0, vested_qty NUMERIC(19,4) NOT NULL DEFAULT 0, exercised_qty NUMERIC(19,4) NOT NULL DEFAULT 0,
+    sbc_expense NUMERIC(19,4) NOT NULL DEFAULT 0, source_event_id UUID NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proj.esop_virtual_dividends (
+    id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, period CHAR(7) NOT NULL, amount NUMERIC(19,4) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Declared', source_event_id UUID NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE ON proj.esop_plans, proj.esop_virtual_dividends TO equi_app;
+
+INSERT INTO proj.chart_of_accounts(account_key, code, name, category, normal_balance, auxiliary) VALUES
+ ('AccumAmortization','1602','累计摊销','asset','credit','资产卡片'),
+ ('IntangibleImpairment','1603','无形资产减值准备','asset','credit','资产卡片'),
+ ('AmortExpense','5602-AMORT','管理费用-无形资产摊销','pl_expense','debit','资产卡片'),
+ ('ImpairmentLoss','5711-IMP','资产减值损失','pl_expense','debit','资产卡片'),
+ ('ShareBasedExpense','5602-SBC','管理费用-股份支付','pl_expense','debit','员工'),
+ ('OtherCapitalReserve','4002-OTHER','资本公积-其他资本公积','equity','credit','员工')
+ON CONFLICT (account_key) DO NOTHING;

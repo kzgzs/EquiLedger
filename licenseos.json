@@ -1,7 +1,7 @@
 {
   "name": "玄铁栈道 EquiLedger",
   "slug": "equiledger",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "web_app",
   "short_description": "防篡改企业治理账本：股权/分红/薪酬/税务/决议/验真",
   "description": "玄铁栈道 EquiLedger：事件溯源+哈希链防篡改的企业智能计算治理系统（股权/分红/薪酬/税务/决议/验真），.NET 8 + PostgreSQL 16，Docker 一键部署，含 H5 移动端。"

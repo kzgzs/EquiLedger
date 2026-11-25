@@ -151,6 +151,32 @@ public class PayrollAutoService : BackgroundService
                             }
                         }
                     }
+                    if (Environment.GetEnvironmentVariable("EQUI_IP_AMORT_AUTO") != "0" && now.Day == day && now.Hour >= 9)
+                    {
+                        var periodI = now.ToString("yyyy-MM");
+                        await using var connI = _db.App();
+                        var amDone = Convert.ToInt64(await connI.Scalar("SELECT COUNT(*) FROM proj.amort_runs WHERE period=@p", ("p", periodI)));
+                        var amN = Convert.ToInt64(await connI.Scalar("SELECT COUNT(*) FROM proj.intangible_assets WHERE status='Active' AND life_months>0"));
+                        var iop = await connI.Scalar("SELECT username FROM proj.accounts WHERE role='Operator' AND enabled=TRUE AND frozen=FALSE ORDER BY username LIMIT 1") as string;
+                        if (iop != null)
+                        {
+                            if (amDone == 0 && amN > 0)
+                            {
+                                await _store.Append(new EventStore.Draft("IpAmortizationRun", iop, null,
+                                    new JsonArray(new JsonObject { ["name"] = "系统月度自动摊销（直线法·账面价值封顶）", ["hash"] = EquiLedger.Core.HashChain.Sha256(periodI + iop) }),
+                                    new JsonObject { ["period"] = periodI, ["auto"] = true }));
+                                Console.WriteLine($"月度自动摊销已提交 {periodI}");
+                            }
+                            var scanDone = Convert.ToInt64(await connI.Scalar("SELECT COUNT(*) FROM events.event_log WHERE event_type='IpRenewalScan' AND payload->>'period'=@p", ("p", periodI)));
+                            if (scanDone == 0)
+                            {
+                                await _store.Append(new EventStore.Draft("IpRenewalScan", iop, null,
+                                    new JsonArray(new JsonObject { ["name"] = "系统月度产权到期/续费扫描", ["hash"] = EquiLedger.Core.HashChain.Sha256(periodI + iop + "scan") }),
+                                    new JsonObject { ["period"] = periodI, ["auto"] = true }));
+                                Console.WriteLine($"产权到期扫描已提交 {periodI}");
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"自动算薪服务异常：{ex.Message}"); }

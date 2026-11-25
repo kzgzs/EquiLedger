@@ -25,8 +25,9 @@ public static class Guard
         "BonusGranted", "ModuleSwitchChanged", "InvestmentReceived", "OperatorHandover",
         "CorrectionRecorded", "PeriodClosed", "EmployeeLeft", "CompanyInfoChanged", "AccountAdded", "InvestmentMade",
         "FixedAssetDisposed", "ProductionOrderCreated",
-        "PurchaseApproved", "PurchasePaymentApproved", "LoanReceived", "LoanRepaid", "TaxReturnFiled", "NotifyGroupConfigured",
-        "EmployeeShareSubscription", "EmployeeShareGranted", "ReportClosed"
+        "PurchaseApproved", "PurchasePaymentApproved", "LoanReceived", "LoanRepaid", "TaxReturnFiled",
+        "EmployeeShareSubscription", "EmployeeShareGranted", "ReportClosed",
+        "EsopGranted", "EsopExercised", "EsopExited", "VirtualDividendDeclared"
     };
     private static readonly HashSet<string> RoutineOrResolution = new()
     {
@@ -38,7 +39,10 @@ public static class Guard
         "CapitalPaidIn", "DividendPaid", "CollectionReceived", "RevenueRecorded",
         "PayrollRun", "BankFlowImported", "EvidenceUploaded", "RelationDeclared", "InvestorQualified", "ShareholderDeceased", "TodoCompleted", "LegalEntryAdded", "InvestmentReturnReceived", "PayrollPaid",
         "FixedAssetAcquired", "FixedAssetDepreciationRun", "StockReceived", "StockIssued", "StockCounted", "MaterialDefined", "WarehouseDefined", "EquipmentRegistered", "ProductionCompleted",
-        "PurchaseRequested", "PurchaseOrderCreated", "PurchaseDelivered", "PurchaseInspected", "PurchasePaid", "LoanInterestAccrued", "TaxPaid"
+        "PurchaseRequested", "PurchaseOrderCreated", "PurchaseDelivered", "PurchaseInspected", "PurchasePaid", "LoanInterestAccrued", "TaxPaid",
+        "NotifyGroupConfigured", "SupervisionEmailSet", "ReportFiled",
+        "IpRegistered", "IpRecordAdded", "IpValued", "IpCapitalized", "IpAmortizationRun", "IpImpaired", "IpDisposed", "IpRenewalScan",
+        "EsopApplied", "EsopReviewed", "EsopVested", "VirtualDividendPaid"
     };
     private static readonly Dictionary<string, string> RoutineCategory = new()
     {
@@ -62,10 +66,13 @@ public static class Guard
         ["LoanReceived"] = new[] { "Loan" },
         ["LoanRepaid"] = new[] { "LoanRepayment" },
         ["TaxReturnFiled"] = new[] { "TaxFiling" },
-        ["NotifyGroupConfigured"] = new[] { "NotifyPolicy" },
         ["EmployeeShareSubscription"] = new[] { "EmployeeShare" },
         ["EmployeeShareGranted"] = new[] { "EmployeeShareGrant" },
         ["ReportClosed"] = new[] { "ReportHandling" },
+        ["EsopGranted"] = new[] { "EsopPlan" },
+        ["EsopExercised"] = new[] { "EsopExercise" },
+        ["EsopExited"] = new[] { "EsopExit" },
+        ["VirtualDividendDeclared"] = new[] { "VirtualDividend" },
         ["OperatorHandover"] = new[] { "OperatorHandover" },
         ["CorrectionRecorded"] = new[] { "Correction" },
         ["PeriodClosed"] = new[] { "PeriodClose" },
@@ -146,19 +153,12 @@ public static class Guard
             }
             return;
         }
-        if (t == "ReportFiled")
-        {
-            // 举报通道：公司任何启用账号均可举报（含匿名），不占操作员执行通道；依据可选
-            if (Ps("category") is not ("Embezzlement" or "Fraud" or "RelatedPartyTransfer" or "ConflictOfInterest" or "AbuseOfPower" or "Other"))
-                throw new GuardException("BadParams", "举报类别须为 Embezzlement/Fraud/RelatedPartyTransfer/ConflictOfInterest/AbuseOfPower/Other");
-            if (string.IsNullOrWhiteSpace(Ps("description"))) throw new GuardException("BadParams", "举报描述必填");
-            if (string.IsNullOrWhiteSpace(Ps("target"))) throw new GuardException("BadParams", "被举报对象必填");
-            return;
-        }
         if (t == "ReportInvestigated")
         {
-            if (caller.Role != "Supervisor") throw new GuardException("RoleDenied", "举报调查权归监事");
+            // 调查取证：监事或操作员（高层共同监督）；须附调查依据
+            if (caller.Role != "Supervisor" && caller.Role != "Operator") throw new GuardException("RoleDenied", "举报调查权归监事/操作员（高层共同监督）");
             if (string.IsNullOrWhiteSpace(Ps("findings"))) throw new GuardException("BadParams", "调查结论必填");
+            if ((d.Evidence as JsonArray)?.Count is null or 0) throw new GuardException("NoEvidence", "调查取证须附依据");
             return;
         }
         if (caller.Role != "Operator")
@@ -428,6 +428,158 @@ public static class Guard
                     if (rp.Count == 0) throw new GuardException("NoReport", "举报不存在");
                     if (Pg.S(rp[0]["status"]) == "Closed") throw new GuardException("AlreadyClosed", "举报已办结");
                     if (Ps("outcome") is not ("Substantiated" or "PartiallySubstantiated" or "Unsubstantiated")) throw new GuardException("BadParams", "结论须为 Substantiated/PartiallySubstantiated/Unsubstantiated");
+                    if (Ps("severity") is not ("General" or "Serious")) throw new GuardException("BadParams", "情节须为 General/Serious（严重者可群通告）");
+                    break;
+                }
+            case "ReportFiled":
+                {
+                    // 举报处理：操作员（铁面判官）登记监管邮箱转来的材料；被举报≠违规，须调查取证
+                    if (Ps("category") is not ("Embezzlement" or "Fraud" or "RelatedPartyTransfer" or "ConflictOfInterest" or "AbuseOfPower" or "Other"))
+                        throw new GuardException("BadParams", "举报类别须为 Embezzlement/Fraud/RelatedPartyTransfer/ConflictOfInterest/AbuseOfPower/Other");
+                    if (string.IsNullOrWhiteSpace(Ps("description"))) throw new GuardException("BadParams", "举报描述必填");
+                    if (string.IsNullOrWhiteSpace(Ps("target"))) throw new GuardException("BadParams", "被举报对象必填");
+                    if (Ps("source") is not ("Mailbox" or "Other")) throw new GuardException("BadParams", "来源须为 Mailbox（监管邮箱）或 Other");
+                    break;
+                }
+            case "SupervisionEmailSet":
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(Ps("email"), @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+                        throw new GuardException("BadParams", "监管邮箱格式无效");
+                    break;
+                }
+            case "IpRegistered":
+                {
+                    if (Ps("category") is not ("Patent" or "Trademark" or "Copyright" or "TechSecret" or "DataRight" or "Franchise" or "Other"))
+                        throw new GuardException("BadParams", "产权类别须为 Patent/Trademark/Copyright/TechSecret/DataRight/Franchise/Other");
+                    if (string.IsNullOrWhiteSpace(Ps("name")) || string.IsNullOrWhiteSpace(Ps("ownerParty"))) throw new GuardException("BadParams", "产权名称与权利人必填");
+                    break;
+                }
+            case "IpRecordAdded":
+                {
+                    if (await IpRow(conn, Ps("ipId")) is null) throw new GuardException("NoIp", "产权档案不存在");
+                    if (Ps("kind") is not ("Transfer" or "License" or "Pledge" or "Dispute" or "Litigation" or "Renewal" or "StatusChange" or "Other"))
+                        throw new GuardException("BadParams", "记录类型须为 Transfer/License/Pledge/Dispute/Litigation/Renewal/StatusChange/Other");
+                    break;
+                }
+            case "IpValued":
+                {
+                    if (await IpRow(conn, Ps("ipId")) is null) throw new GuardException("NoIp", "产权档案不存在");
+                    if (Pd("appraisedValue") < 0 || string.IsNullOrWhiteSpace(Ps("appraisalReport"))) throw new GuardException("BadParams", "评估价值须非负且附评估报告引用");
+                    break;
+                }
+            case "IpCapitalized":
+                {
+                    // CAS6 确认闸门：可辨认性+经济利益流入+成本可靠计量，三者缺一不得入账
+                    var ip = await IpRow(conn, Ps("ipId"));
+                    if (ip is null) throw new GuardException("NoIp", "产权档案不存在");
+                    if (ip["linked_asset_id"] is not null and not DBNull) throw new GuardException("AlreadyLinked", "该产权已关联无形资产账簿");
+                    var cr = p["criteria"] as JsonObject;
+                    if (cr?["identifiable"]?.GetValue<bool>() != true || cr?["economicBenefits"]?.GetValue<bool>() != true || cr?["costReliable"]?.GetValue<bool>() != true)
+                        throw new GuardException("NotRecognizable", "不满足无形资产确认条件（可辨认性/经济利益流入/成本可靠计量），产权档案保留但不得计入财务资产");
+                    if (Pd("cost") <= 0 || (int)Pd("lifeMonths") <= 0) throw new GuardException("BadParams", "成本须为正且使用寿命月数须为正");
+                    if (Ps("payMode") is not ("Bank" or "AP")) throw new GuardException("BadParams", "payMode 须为 Bank/AP");
+                    break;
+                }
+            case "IpImpaired":
+                {
+                    var ia = await IntangibleRow(conn, Ps("assetId"));
+                    if (ia is null || Pg.S(ia["status"]) != "Active") throw new GuardException("NoAsset", "无形资产不存在或已处置");
+                    var book = Pg.D(ia["cost"]) - Pg.D(ia["accumulated_amort"]) - Pg.D(ia["impairment"]);
+                    if (Pd("amount") <= 0 || Pd("amount") > book) throw new GuardException("AmountExceed", $"减值额须为正且不超过账面价值 {book}");
+                    break;
+                }
+            case "IpDisposed":
+                {
+                    var ia = await IntangibleRow(conn, Ps("assetId"));
+                    if (ia is null || Pg.S(ia["status"]) != "Active") throw new GuardException("NoAsset", "无形资产不存在或已处置");
+                    if (Pd("proceeds") < 0) throw new GuardException("BadParams", "处置收入须非负");
+                    break;
+                }
+            case "IpAmortizationRun":
+                {
+                    if (Convert.ToInt64(await conn.Scalar("SELECT COUNT(*) FROM proj.amort_runs WHERE period=@p", ("p", Ps("period")))) > 0)
+                        throw new GuardException("AlreadyRun", $"期间 {Ps("period")} 已摊销");
+                    break;
+                }
+            case "EsopApplied":
+                {
+                    var em = await conn.Rows("SELECT leave_date FROM proj.employees WHERE employee_id=@i", ("i", Ps("employeeId")));
+                    if (em.Count == 0) throw new GuardException("NoEmployee", "员工不存在");
+                    if (em[0]["leave_date"] is not null and not DBNull) throw new GuardException("EmployeeLeft", "离职员工不得参与持股计划");
+                    if (Ps("form") is not ("DirectTransfer" or "CapitalIncrease" or "Platform" or "Option" or "Virtual"))
+                        throw new GuardException("BadParams", "形式须为 DirectTransfer/CapitalIncrease/Platform/Option/Virtual（五形式分离管理）");
+                    if (Pd("quantity") <= 0 && (p["ratio"] is null || Pd("ratio") <= 0 || Pd("ratio") >= 1)) throw new GuardException("BadParams", "须填数量 quantity 或比例 ratio(0,1)");
+                    break;
+                }
+            case "EsopReviewed":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null) throw new GuardException("NoPlan", "持股计划不存在");
+                    if (Pg.S(pl["status"]) != "Applied") throw new GuardException("BadStatus", "仅已申请计划可审核");
+                    if (Ps("result") is not ("Approved" or "Rejected")) throw new GuardException("BadParams", "审核结果须为 Approved/Rejected");
+                    if (string.IsNullOrWhiteSpace(Ps("review"))) throw new GuardException("BadParams", "审核意见必填");
+                    break;
+                }
+            case "EsopGranted":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null) throw new GuardException("NoPlan", "持股计划不存在");
+                    if (Pg.S(pl["status"]) != "Reviewed") throw new GuardException("BadStatus", "计划须先通过资格审核");
+                    if (string.IsNullOrWhiteSpace(Ps("confirmRef"))) throw new GuardException("NoConfirm", "须附员工确认凭据（授予不等于自动完成法律变更）");
+                    var form = Pg.S(pl["form"]);
+                    if (form == "DirectTransfer")
+                    {
+                        await RequireSignedContract(conn, Ps("contractId"), new[] { "股权类" });
+                        var res = await ResolutionParams(conn, d.ResolutionNo!);
+                        if (res?["preemptionWaived"]?.GetValue<bool>() != true)
+                            throw new GuardException("Preemption", "受让老股须其他股东放弃优先购买权（决议载明）");
+                        if (string.IsNullOrWhiteSpace(Ps("fromParty"))) throw new GuardException("BadParams", "须填出让股东 fromParty");
+                    }
+                    else if (form == "Platform" && string.IsNullOrWhiteSpace(Ps("platformParty") == "" ? Pg.S(pl["platform_party"]) : Ps("platformParty")))
+                        throw new GuardException("BadParams", "持股平台形式须填平台股东 platformParty");
+                    else if (form == "Virtual" && (Pg.D(pl["ratio"]) <= 0 || Pg.D(pl["ratio"]) >= 1))
+                        throw new GuardException("BadParams", "虚拟分红权比例须在 (0,1)");
+                    break;
+                }
+            case "EsopVested":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null || Pg.S(pl["form"]) != "Option") throw new GuardException("BadForm", "仅期权计划可归属");
+                    if (Pg.S(pl["status"]) != "Granted") throw new GuardException("BadStatus", "计划须已授予");
+                    if (p["conditionsMet"]?.GetValue<bool>() != true) throw new GuardException("ConditionsNotMet", "归属条件未满足（服务年限/业绩等）");
+                    if (Pd("quantity") <= 0 || Pd("quantity") > Pg.D(pl["granted_qty"]) - Pg.D(pl["vested_qty"])) throw new GuardException("AmountExceed", "归属数量超过未归属余额");
+                    if (Pd("fairValue") < 0) throw new GuardException("BadParams", "授予日公允价值须非负");
+                    break;
+                }
+            case "EsopExercised":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null || Pg.S(pl["form"]) != "Option") throw new GuardException("BadForm", "仅期权计划可行权");
+                    if (Pd("quantity") <= 0 || Pd("quantity") > Pg.D(pl["vested_qty"]) - Pg.D(pl["exercised_qty"])) throw new GuardException("AmountExceed", "行权数量超过已归属未行权余额");
+                    break;
+                }
+            case "EsopExited":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null) throw new GuardException("NoPlan", "持股计划不存在");
+                    if (Pg.S(pl["status"]) == "Exited") throw new GuardException("AlreadyExited", "计划已退出");
+                    if (Pg.S(pl["form"]) is "DirectTransfer" or "CapitalIncrease" && Pd("capitalAmount") <= 0) throw new GuardException("BadParams", "实股退出须填退出注册资本额 capitalAmount");
+                    break;
+                }
+            case "VirtualDividendDeclared":
+                {
+                    var pl = await EsopRow(conn, Ps("planId"));
+                    if (pl is null || Pg.S(pl["form"]) != "Virtual") throw new GuardException("BadForm", "仅虚拟分红权计划可宣告分红");
+                    if (Pg.S(pl["status"]) != "Granted") throw new GuardException("BadStatus", "计划须已授予");
+                    if (Pd("amount") <= 0) throw new GuardException("BadParams", "分红额须为正");
+                    break;
+                }
+            case "VirtualDividendPaid":
+                {
+                    var vd = await conn.Rows("SELECT status,amount FROM proj.esop_virtual_dividends WHERE id=@i", ("i", Ps("dividendId")));
+                    if (vd.Count == 0) throw new GuardException("NoDividend", "先宣告后支付");
+                    if (Pg.S(vd[0]["status"]) != "Declared") throw new GuardException("AlreadyPaid", "已支付");
+                    if (Pd("amount") != Pg.D(vd[0]["amount"])) throw new GuardException("AmountMismatch", "支付额须等于宣告额");
                     break;
                 }
             case "ShareSubscription":
@@ -552,6 +704,15 @@ public static class Guard
         var rows = await conn.Rows(@"SELECT cp.* FROM proj.cap_positions cp WHERE cp.cap_version=(SELECT MAX(version) FROM proj.cap_versions) AND cp.party_id=@p", ("p", partyId));
         return rows.FirstOrDefault();
     }
+
+    private static async Task<Dictionary<string, object?>?> IpRow(NpgsqlConnection conn, string ipId)
+        => (await conn.Rows("SELECT * FROM proj.ip_rights WHERE ip_id=@i", ("i", ipId))).FirstOrDefault();
+
+    private static async Task<Dictionary<string, object?>?> IntangibleRow(NpgsqlConnection conn, string assetId)
+        => (await conn.Rows("SELECT * FROM proj.intangible_assets WHERE asset_id=@i", ("i", assetId))).FirstOrDefault();
+
+    private static async Task<Dictionary<string, object?>?> EsopRow(NpgsqlConnection conn, string planId)
+        => (await conn.Rows("SELECT * FROM proj.esop_plans WHERE plan_id=@i", ("i", planId))).FirstOrDefault();
 
     private static async Task<JsonObject?> ResolutionParams(NpgsqlConnection conn, string no)
     {

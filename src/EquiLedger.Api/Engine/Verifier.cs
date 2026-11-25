@@ -23,7 +23,8 @@ public class Verifier
         "purchase_requests", "purchase_orders", "purchase_deliveries", "purchase_inspections", "purchase_payments", "loans", "loan_interest", "tax_returns", "notify_groups", "notify_bindings",
         "reports",
         "contracts", "module_states", "todos", "bank_flows", "whitelist_accounts", "investors",
-        "evidence_files", "routine_usage", "impact_lists", "sales_orders", "commissions", "bonuses", "access_logs", "legal_library", "external_investments"
+        "evidence_files", "routine_usage", "impact_lists", "sales_orders", "commissions", "bonuses", "access_logs", "legal_library", "external_investments",
+        "ip_rights", "ip_events_log", "intangible_assets", "amort_runs", "esop_plans", "esop_virtual_dividends"
     };
 
     public record TableDiff(string Table, long Missing, long Extra);

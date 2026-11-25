@@ -437,14 +437,17 @@ public static class Endpoints
             await using var conn = db.App();
             var gs = await conn.Rows("SELECT group_id,name,kind,department,webhook,enabled FROM proj.notify_groups ORDER BY group_id");
             var bs = await conn.Rows("SELECT group_id,event_type FROM proj.notify_bindings ORDER BY group_id,event_type");
+            var supEmail = Pg.S(await conn.Scalar("SELECT supervision_email FROM proj.company WHERE id=1"));
             var arr = gs.Select(g => new JsonObject
             {
                 ["groupId"] = Pg.S(g["group_id"]), ["name"] = Pg.S(g["name"]), ["kind"] = Pg.S(g["kind"]),
                 ["department"] = Pg.S(g["department"]), ["enabled"] = (bool)g["enabled"]!,
                 ["webhookMasked"] = Pg.S(g["webhook"]).Length > 24 ? Pg.S(g["webhook"])[..24] + "…" : Pg.S(g["webhook"]),
+                ["platform"] = Pg.S(g["webhook"]).Contains("qyapi.weixin.qq.com") ? "企业微信" : Pg.S(g["webhook"]).Contains("oapi.dingtalk.com") ? "钉钉" : Pg.S(g["webhook"]).Contains("open.feishu.cn") ? "飞书" : "自定义",
+                ["intro"] = $"本群为{EquiLedger.Engine.NotifyPolicy.KindCn[Array.IndexOf(EquiLedger.Engine.NotifyPolicy.GroupKinds, Pg.S(g["kind"]))]}，仅接收绑定事件的通知；高敏感事项仅摘要，明细授权登录 EquiLedger 查看。监管举报邮箱：{(supEmail == "" ? "（未设置）" : supEmail)}（多个高层共同监督登录；被举报不等于违规，须调查取证）。",
                 ["bindings"] = new JsonArray(bs.Where(b => Pg.S(b["group_id"]) == Pg.S(g["group_id"])).Select(b => (JsonNode)Pg.S(b["event_type"])).ToArray())
             }).ToArray();
-            return Results.Json(new { groups = arr, kinds = EquiLedger.Engine.NotifyPolicy.GroupKinds, warning = "群消息撤回不等于数据收回；高敏感事件仅推送摘要，明细授权登录系统查看；任何群不接收完整工资账本。" });
+            return Results.Json(new { groups = arr, kinds = EquiLedger.Engine.NotifyPolicy.GroupKinds, supervisionEmail = supEmail, warning = "群消息撤回不等于数据收回；高敏感事件仅推送摘要，明细授权登录系统查看；任何群不接收完整工资账本。群设置由操作员直接完成，无需决议。" });
         });
         app.MapGet("/api/notify-logs", async (HttpRequest req) =>
         {
@@ -454,13 +457,13 @@ public static class Endpoints
             return Results.Json(JRows(await conn.Rows("SELECT log_id,group_id,event_type,level,digest,status,sent_at FROM proj.notify_logs ORDER BY sent_at DESC LIMIT 100")));
         });
 
-        // ---------- 举报通道 ----------
+        // ---------- 举报处理（监管邮箱转来→操作员登记→调查取证→决议认定→严重群通告） ----------
         app.MapGet("/api/complaints", async (HttpRequest req) =>
         {
             var c = await Auth(req, db);
             if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
             await using var conn = db.App();
-            return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,description,anonymous,reporter,findings,outcome,action,status FROM proj.reports ORDER BY report_id")));
+            return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,description,reporter,source,severity,findings,investigated_by,outcome,action,status FROM proj.reports ORDER BY report_id")));
         });
         app.MapGet("/api/my-complaints", async (HttpRequest req) =>
         {
@@ -468,6 +471,69 @@ public static class Endpoints
             if (c is null) return Deny("未登录");
             await using var conn = db.App();
             return Results.Json(JRows(await conn.Rows("SELECT report_id,category,target,status,outcome FROM proj.reports WHERE reporter_actor=@u ORDER BY report_id", ("u", c.UserId))));
+        });
+
+        // ---------- 知识产权双账簿 ----------
+        app.MapGet("/api/ip-rights", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows(@"SELECT i.ip_id,i.name,i.category,i.reg_no,i.owner_party,i.controller,i.acquire_mode,to_char(i.acquire_date,'YYYY-MM-DD') AS acquire_date,i.cost,i.fees,
+                i.appraised_value,i.appraisal_report,to_char(i.valid_until,'YYYY-MM-DD') AS valid_until,to_char(i.renew_date,'YYYY-MM-DD') AS renew_date,i.status,i.linked_asset_id,
+                a.cost AS book_cost,a.accumulated_amort,a.impairment,(a.cost-a.accumulated_amort-a.impairment) AS book_value
+                FROM proj.ip_rights i LEFT JOIN proj.intangible_assets a ON a.asset_id=i.linked_asset_id ORDER BY i.ip_id")));
+        });
+        app.MapGet("/api/ip-detail", async (HttpRequest req, string id) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var ip = await conn.Rows("SELECT * FROM proj.ip_rights WHERE ip_id=@i", ("i", id));
+            if (ip.Count == 0) return Deny("产权不存在");
+            var logs = await conn.Rows("SELECT log_id,kind,detail,memo FROM proj.ip_events_log WHERE ip_id=@i ORDER BY log_id", ("i", id));
+            return Results.Json(new { ip = JRows(ip)[0], logs = JRows(logs) });
+        });
+        app.MapGet("/api/intangibles", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows(@"SELECT asset_id,ip_id,name,cost,life_months,accumulated_amort,impairment,
+                (cost-accumulated_amort-impairment) AS book_value,recognized_date,status FROM proj.intangible_assets ORDER BY asset_id")));
+        });
+
+        // ---------- 员工持股与股权激励中心 ----------
+        app.MapGet("/api/esop-plans", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT plan_id,employee_id,form,status,quantity,ratio,price,platform_party,vesting,review,granted_qty,vested_qty,exercised_qty,sbc_expense FROM proj.esop_plans ORDER BY plan_id")));
+        });
+        app.MapGet("/api/esop-dividends", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT id,plan_id,period,amount,status FROM proj.esop_virtual_dividends ORDER BY id")));
+        });
+        app.MapGet("/api/esop-positions", async (HttpRequest req, string employeeId) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var em = await conn.Rows("SELECT party_id,name,is_shareholder FROM proj.employees WHERE employee_id=@i", ("i", employeeId));
+            if (em.Count == 0) return Deny("员工不存在");
+            var partyId = Pg.S(em[0]["party_id"]);
+            var cap = await conn.Rows("SELECT subscribed,paid_in,status FROM proj.cap_positions WHERE party_id=@p AND cap_version=(SELECT MAX(version) FROM proj.cap_versions)", ("p", partyId));
+            var plans = await conn.Rows("SELECT plan_id,form,status,quantity,ratio,granted_qty,vested_qty,exercised_qty,platform_party FROM proj.esop_plans WHERE employee_id=@i ORDER BY plan_id", ("i", employeeId));
+            return Results.Json(new
+            {
+                employeeId, name = Pg.S(em[0]["name"]), isShareholder = (bool)em[0]["is_shareholder"]!,
+                direct = JRows(cap), plans = JRows(plans),
+                note = "股权权利、员工岗位权限、系统操作权限分别管理：入股不自动获得系统权限；股东知情查阅凭股东角色账号依法保障。虚拟分红权仅经济权益，不当然成为股东。"
+            });
         });
 
         app.MapGet("/api/employees", async (HttpRequest req) =>
