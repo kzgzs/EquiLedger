@@ -195,7 +195,7 @@ fetch('/api/setup-status').then(r => r.json()).then(s => { if (s.founded) $('set
 // ---------- 主框架 ----------
 const TABS = [
   ['quick', '快捷'], ['dash', '总览'], ['cap', '股权结构'], ['res', '决议'], ['rules', '规则库'], ['div', '分红'],
-  ['pay', '薪酬'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
+  ['pay', '薪酬'], ['fin', '财务'], ['contract', '合同'], ['legal', '法务库'], ['module', '模块开关'], ['todo', '待办'], ['events', '事件流'],
   ['submit', '操作员录入'], ['audit', '审计验真']
 ];
 let curTab = 'dash';
@@ -309,6 +309,39 @@ const RENDER = {
     h += '<h3>员工档案（入职资料 · 薪酬结构 · 社保与发放状态）</h3>' + table([['employee_id', '编号'], ['name', '姓名'], ['gender', '性别'], ['age', '年龄'], ['department', '部门'], ['position', '岗位'], ['skills', '技能'], ['salaryType', '薪酬结构'], ['baseSalary', '底薪'], ['siStatus', '社保状态'], ['last_paid_period', '最近发薪期间'], ['hire_date', '入职'], ['leave_date', '离职'], ['is_shareholder', '股东兼任']],
       emps.map(e => Object.assign({}, e, e.profile || {})),
       { salaryType: v => SAL[v] || esc(v ?? ''), baseSalary: money, siStatus: v => v ? tag(v, { 已参保: 'ok', 办理中: 'warn', 未参保: 'err' }) : '<span class="tag warn">待登记</span>', last_paid_period: v => v || '未发放', is_shareholder: v => v ? '是（双身份分账）' : '' });
+    $('tabBody').innerHTML = h;
+  },
+  async fin() {
+    const p = ($('finPeriod') && $('finPeriod').value) || new Date().toISOString().slice(0, 7);
+    const [vo, rp, tb, ap] = await Promise.all([
+      api('/api/vouchers?period=' + encodeURIComponent(p)), api('/api/reports?period=' + encodeURIComponent(p)),
+      api('/api/trial-balance?period=' + encodeURIComponent(p)), api('/api/arap')]);
+    const bs = rp.balanceSheet, inc = rp.income, cf = rp.cashFlow;
+    const balTable = (arr) => table([['code', '科目码'], ['name', '科目'], ['balance', '余额']], arr, { balance: money });
+    let h = `<h2>财务会计（科目·凭证·报表·往来）</h2>
+    <div class="row"><input id="finPeriod" value="${esc(p)}" placeholder="YYYY-MM" style="width:110px"><button onclick="openTab('fin')">查询</button>
+    <span class="hint">凭证=账本按源事件归集（不重复建账）；三表=科目聚合；与治理事件链同源、可逐笔追溯</span></div>
+    <h3>资产负债表（截至 ${esc(p)}） ${tag(bs.balanced ? '资产=负债+权益' : '不平衡！', { '资产=负债+权益': 'ok', '不平衡！': 'err' })}</h3>
+    <div class="grid2"><div><h4>资产 ${money(bs.totalAssets)}</h4>${balTable(bs.assets)}</div><div><h4>负债 ${money(bs.totalLiabilities)}</h4>${balTable(bs.liabilities)}</div></div>
+    <h4>权益 ${money(bs.totalEquity)}</h4>${balTable(bs.equity)}
+    <h3>利润表（本期 / 本年累计）</h3>
+    <div class="grid2"><div><h4>本期净利 ${money(inc.period.netProfit)}</h4>${balTable(inc.period.revenue)}${balTable(inc.period.expenses)}</div>
+    <div><h4>本年累计净利 ${money(inc.ytd.netProfit)}</h4><p class="hint">收入 ${money(inc.ytd.totalRevenue)} · 费用 ${money(inc.ytd.totalExpense)}</p></div></div>
+    <h3>现金流量表（本期）</h3>
+    ${table([['k', '活动'], ['inflow', '流入'], ['outflow', '流出'], ['net', '净额']],
+      [['operating', '经营'], ['investing', '投资'], ['financing', '筹资']].map(x => Object.assign({ k: x[1] }, cf[x[0]])),
+      { inflow: money, outflow: money, net: money })}
+    <p class="hint">现金净增加 ${money(cf.netIncrease)}（与银行/现金科目本期发生勾稽）</p>
+    <h3>科目余额表</h3>
+    ${table([['code', '科目码'], ['name', '科目'], ['periodDebit', '本期借方'], ['periodCredit', '本期贷方'], ['balance', '累计余额']], tb,
+      { periodDebit: money, periodCredit: money, balance: money })}
+    <h3>记账凭证（${vo.length} 张）</h3>
+    ${vo.map(v => `<div class="panel m-card"><b>${esc(v.voucherNo)}</b> ${tag(EVENT_CN[v.type] || v.type, {})} ${v.resolutionNo ? '<span class="tag dim">决议 ' + esc(v.resolutionNo) + '</span>' : ''} ${tag(v.balanced ? '借贷平衡' : '不平衡！', { 借贷平衡: 'ok', '不平衡！': 'err' })}
+      ${table([['code', '科目码'], ['name', '科目'], ['debit', '借方'], ['credit', '贷方'], ['memo', '摘要']], v.lines, { debit: money, credit: money })}
+      <span class="hint">合计 借 ${money(v.totalDebit)} / 贷 ${money(v.totalCredit)} · 依据：${(v.evidence || []).map(esc).join('、') || '无附件'}</span></div>`).join('')}
+    <h3>应收应付台账</h3>
+    <h4>应收（账龄）</h4>${table([['orderId', '订单'], ['customer', '客户'], ['balance', '未收'], ['aging', '账龄']], ap.receivables, { balance: money })}
+    <h4>应付</h4>${table([['kind', '类别'], ['ref', '引用'], ['amount', '金额']], ap.payables, { amount: money })}`;
     $('tabBody').innerHTML = h;
   },
   async contract() {

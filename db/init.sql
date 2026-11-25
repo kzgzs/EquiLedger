@@ -337,3 +337,50 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS sponsorships_no_mutate ON dev.sponsorships;
 CREATE TRIGGER sponsorships_no_mutate BEFORE UPDATE OR DELETE OR TRUNCATE ON dev.sponsorships
     FOR EACH STATEMENT EXECUTE FUNCTION dev.no_mutate();
+
+-- ========== 模块三：会计科目表（参考数据·静态种子·不参与事件重放比对） ==========
+-- account_key 与 proj.ledger.account 对应；code 为小企业会计准则科目码（辅助核算码带后缀）
+CREATE TABLE IF NOT EXISTS proj.chart_of_accounts (
+    account_key TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,          -- asset/liability/equity/pl_revenue/pl_expense
+    normal_balance TEXT NOT NULL,    -- debit/credit
+    auxiliary TEXT NOT NULL DEFAULT '',
+    system TEXT NOT NULL DEFAULT 'SmallEnterprise'
+);
+INSERT INTO proj.chart_of_accounts(account_key,code,name,category,normal_balance,auxiliary) VALUES
+ ('Cash','1001','库存现金','asset','debit',''),
+ ('Bank','1002','银行存款','asset','debit',''),
+ ('AR','1122','应收账款','asset','debit','客户'),
+ ('Prepayments','1123','预付账款','asset','debit','供应商'),
+ ('Materials','1403','原材料','asset','debit','物料'),
+ ('Inventory','1405','库存商品','asset','debit','物料'),
+ ('FixedAssets','1501','固定资产','asset','debit','资产卡片'),
+ ('AccumDepreciation','1502','累计折旧','asset','credit','资产卡片'),
+ ('LongTermEquityInvestment','1511','长期股权投资','asset','debit','被投资单位'),
+ ('IntangibleAssets','1601','无形资产','asset','debit','资产卡片'),
+ ('AP','2202','应付账款','liability','credit','供应商'),
+ ('PayrollPayable','2211','应付职工薪酬','liability','credit','员工'),
+ ('SIPayable','2211-SI','应付社保公积金','liability','credit','员工'),
+ ('TaxPayable','2221','应交税费','liability','credit','税种'),
+ ('DividendPayable','2231','应付股利','liability','credit','股东'),
+ ('ExitPayable','2241','其他应付款-退股款','liability','credit','股东'),
+ ('DividendSuspense','2241-SUS','其他应付款-分红挂账','liability','credit','股东'),
+ ('PaidInCapital','4001','实收资本','equity','credit','股东'),
+ ('CapitalReserve','4002','资本公积','equity','credit','股东'),
+ ('SurplusReserve','4101','盈余公积','equity','credit',''),
+ ('CurrentProfit','4103','本年利润','equity','credit',''),
+ ('ProfitDistribution','4104','利润分配','equity','debit','股东'),
+ ('Revenue','5001','主营业务收入','pl_revenue','credit','客户/产品'),
+ ('InvestmentIncome','5051','投资收益','pl_revenue','credit','被投资单位'),
+ ('CostOfSales','5401','主营业务成本','pl_expense','debit','产品'),
+ ('TaxSurcharge','5403','税金及附加','pl_expense','debit','税种'),
+ ('SellingExpense','5601','销售费用','pl_expense','debit','部门'),
+ ('Expense','5602','管理费用','pl_expense','debit','部门/费用类别'),
+ ('PayrollExpense','5602-WAGE','管理费用-工资','pl_expense','debit','员工'),
+ ('SICompanyExpense','5602-SI','管理费用-社保','pl_expense','debit','员工'),
+ ('FinanceExpense','5603','财务费用','pl_expense','debit',''),
+ ('ExitGainLoss','5711','营业外支出-退股差额','pl_expense','debit','股东')
+ON CONFLICT (account_key) DO NOTHING;
+GRANT SELECT ON proj.chart_of_accounts TO equi_app;

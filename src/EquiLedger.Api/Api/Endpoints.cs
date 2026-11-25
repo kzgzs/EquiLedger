@@ -217,6 +217,94 @@ public static class Endpoints
             return Results.Json(new { entries = JRows(rows), lockedPeriods = locks.Select(l => Pg.S(l["period"])) });
         });
 
+        // ---------- 模块三：财务会计（科目/凭证/三表/余额表/往来台账；全部为账本聚合视图，不重复建账） ----------
+        app.MapGet("/api/chart", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            return Results.Json(JRows(await conn.Rows("SELECT * FROM proj.chart_of_accounts ORDER BY code")));
+        });
+
+        app.MapGet("/api/vouchers", async (HttpRequest req, string period) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var rows = await conn.Rows("SELECT * FROM proj.ledger WHERE period=@p ORDER BY id", ("p", period));
+            var evs = await conn.Rows("SELECT seq,event_id,event_type AS type,resolution_no,evidence FROM events.event_log");
+            var byId = evs.ToDictionary(e => (Guid)e["event_id"]!, e => e);
+            var chart = await conn.Rows("SELECT * FROM proj.chart_of_accounts ORDER BY code");
+            return Results.Json(Finance.Vouchers(period, rows, byId, chart));
+        });
+
+        app.MapGet("/api/reports", async (HttpRequest req, string period) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var all = await conn.Rows("SELECT * FROM proj.ledger ORDER BY id");
+            var chart = await conn.Rows("SELECT * FROM proj.chart_of_accounts ORDER BY code");
+            var evs = await conn.Rows("SELECT event_id,event_type AS type FROM events.event_log");
+            var year = period[..4];
+            var cum = Finance.Sums(all, r => Pg.S(r["period"]).CompareTo(period) <= 0);
+            var per = Finance.Sums(all, r => Pg.S(r["period"]) == period);
+            var ytd = Finance.Sums(all, r => Pg.S(r["period"]).StartsWith(year) && Pg.S(r["period"]).CompareTo(period) <= 0);
+            var perRows = all.Where(r => Pg.S(r["period"]) == period).ToList();
+            return Results.Json(new
+            {
+                balanceSheet = Finance.BalanceSheet(cum, chart),
+                income = Finance.Income(per, ytd, chart),
+                cashFlow = Finance.CashFlow(perRows, evs.ToDictionary(e => (Guid)e["event_id"]!, e => Pg.S(e["type"])))
+            });
+        });
+
+        app.MapGet("/api/trial-balance", async (HttpRequest req, string period) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var all = await conn.Rows("SELECT * FROM proj.ledger ORDER BY id");
+            var chart = await conn.Rows("SELECT * FROM proj.chart_of_accounts ORDER BY code");
+            var cum = Finance.Sums(all, r => Pg.S(r["period"]).CompareTo(period) <= 0);
+            var per = Finance.Sums(all, r => Pg.S(r["period"]) == period);
+            return Results.Json(Finance.Trial(per, cum, chart));
+        });
+
+        app.MapGet("/api/arap", async (HttpRequest req) =>
+        {
+            var c = await Auth(req, db);
+            if (c is null || !ReadRoles.Contains(c.Role)) return Deny("无权访问");
+            await using var conn = db.App();
+            var orders = await conn.Rows("SELECT order_id,customer,amount,collected,confirmed_at FROM proj.sales_orders WHERE amount>collected ORDER BY confirmed_at");
+            var now = DateTimeOffset.UtcNow;
+            var recv = orders.Select(o =>
+            {
+                var ca = DateTime.SpecifyKind((DateTime)o["confirmed_at"]!, DateTimeKind.Utc);
+                var days = (now - new DateTimeOffset(ca, TimeSpan.Zero)).TotalDays;
+                return new JsonObject
+                {
+                    ["orderId"] = Pg.S(o["order_id"]), ["customer"] = Pg.S(o["customer"]),
+                    ["balance"] = Pg.D(o["amount"]) - Pg.D(o["collected"]),
+                    ["aging"] = days <= 30 ? "≤30天" : days <= 90 ? "31-90天" : days <= 180 ? "91-180天" : ">180天"
+                };
+            }).ToArray();
+            var runs = await conn.Rows("SELECT period,totals FROM proj.payroll_runs WHERE status='Calculated' ORDER BY period");
+            var plans = await conn.Rows("SELECT plan_id,fiscal_year,allocations FROM proj.dividend_plans WHERE status='Approved' ORDER BY fiscal_year");
+            var coms = await conn.Rows("SELECT COALESCE(SUM(amount),0) AS s FROM proj.commissions WHERE status='Pending'");
+            var pay = new JsonArray();
+            foreach (var r in runs) pay.Add(new JsonObject { ["kind"] = "应付工资", ["ref"] = Pg.S(r["period"]), ["amount"] = decimal.TryParse(Pg.J(r["totals"])["net"]?.ToString(), out var pn) ? pn : 0m });
+            foreach (var p in plans)
+            {
+                decimal sum = 0;
+                foreach (var n in Pg.J(p["allocations"]) as JsonArray ?? new JsonArray())
+                    sum += decimal.TryParse(n?["net"]?.ToString(), out var v) ? v : (decimal.TryParse(n?["amount"]?.ToString(), out var v2) ? v2 : 0);
+                pay.Add(new JsonObject { ["kind"] = "应付股利", ["ref"] = Pg.S(p["plan_id"]), ["amount"] = sum });
+            }
+            if (Pg.D(coms[0]["s"]) > 0) pay.Add(new JsonObject { ["kind"] = "应付提成", ["ref"] = "Pending", ["amount"] = Pg.D(coms[0]["s"]) });
+            return Results.Json(new { receivables = recv, payables = pay });
+        });
+
         app.MapGet("/api/employees", async (HttpRequest req) =>
         {
             var c = await Auth(req, db);
