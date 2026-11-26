@@ -2,3 +2,6 @@
 **/obj/
 .git/
 *.md
+dist/
+backups/
+*.zip

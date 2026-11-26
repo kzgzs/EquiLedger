@@ -8,6 +8,9 @@ RUN --mount=type=cache,target=/root/.nuget/packages dotnet restore src/EquiLedge
 COPY src/EquiLedger.Api/ src/EquiLedger.Api/
 COPY web/ src/EquiLedger.Api/wwwroot/
 RUN --mount=type=cache,target=/root/.nuget/packages dotnet publish src/EquiLedger.Api/EquiLedger.Api.csproj -c Release -o /app/publish
+# 注入包内的 license-os 授权配置随镜像带入（干净包无此目录时自动跳过）
+COPY . /ctx/
+RUN if [ -d /ctx/license-os ]; then cp -r /ctx/license-os /app/publish/license-os; fi
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
