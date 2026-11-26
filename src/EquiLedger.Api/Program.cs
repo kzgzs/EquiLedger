@@ -57,6 +57,25 @@ public class LicenseService : BackgroundService
         var domain = Environment.GetEnvironmentVariable("EQUI_LICENSE_DOMAIN") ?? Environment.MachineName;
         var grace = int.TryParse(Environment.GetEnvironmentVariable("EQUI_LICENSE_GRACE_DAYS"), out var g) ? g : 7;
         var cachePath = Path.Combine(Environment.GetEnvironmentVariable("EQUI_LICENSE_CACHE_DIR") ?? "/data/license", "cache.json");
+        // 与 LicenseOS 一键注入互通：环境变量缺省时读注入包内 license-os/config.json（api_url 带 /api/v2 后缀需剥掉）
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            foreach (var dir in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                var cfgPath = Path.Combine(dir, "license-os", "config.json");
+                if (!File.Exists(cfgPath)) continue;
+                try
+                {
+                    var cfg = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(cfgPath));
+                    apiKey = cfg?["api_key"]?.GetValue<string>();
+                    var au = cfg?["api_url"]?.GetValue<string>();
+                    if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER")) && !string.IsNullOrEmpty(au))
+                        server = au.EndsWith("/api/v2") ? au[..^7] : au;
+                }
+                catch (Exception ex) { Console.WriteLine($"license-os/config.json 读取失败：{ex.Message}"); }
+                break;
+            }
+        }
         var client = new LicenseClient();
         while (!ct.IsCancellationRequested)
         {
