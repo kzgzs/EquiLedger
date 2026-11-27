@@ -49,42 +49,53 @@ app.Run();
 /// <summary>商业授权验权：启动即查、每 24h 复查（LicenseOS v2 license/check，出站 HTTPS）。成功验权时间落本地缓存供离线宽限；状态只影响写入闸门，不入事件链。</summary>
 public class LicenseService : BackgroundService
 {
+    private readonly Db _db;
+    public LicenseService(Db db) => _db = db;
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var server = Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER") ?? "https://sz.djkz.top";
+        var meta = LicenseOS.LicenseOSMeta.Parse();
+        var server = Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER");
+        if (string.IsNullOrEmpty(server))
+        {
+            var au = meta["api_url"]?.GetValue<string>() ?? "";
+            server = au != "" ? (au.EndsWith("/api/v2") ? au[..^7] : au) : "https://sz.djkz.top";
+        }
         var apiKey = Environment.GetEnvironmentVariable("EQUI_LICENSE_API_KEY");
-        var key = Environment.GetEnvironmentVariable("EQUI_LICENSE_KEY");
-        var domain = Environment.GetEnvironmentVariable("EQUI_LICENSE_DOMAIN") ?? Environment.MachineName;
+        if (string.IsNullOrEmpty(apiKey)) apiKey = meta["api_key"]?.GetValue<string>() ?? "";
         var grace = int.TryParse(Environment.GetEnvironmentVariable("EQUI_LICENSE_GRACE_DAYS"), out var g) ? g : 7;
         var cachePath = Path.Combine(Environment.GetEnvironmentVariable("EQUI_LICENSE_CACHE_DIR") ?? "/data/license", "cache.json");
-        // 与 LicenseOS 一键注入互通：环境变量缺省时读注入包内 license-os/config.json（api_url 带 /api/v2 后缀需剥掉）
-        if (string.IsNullOrEmpty(apiKey))
-        {
-            foreach (var dir in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
-            {
-                var cfgPath = Path.Combine(dir, "license-os", "config.json");
-                if (!File.Exists(cfgPath)) continue;
-                try
-                {
-                    var cfg = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(cfgPath));
-                    apiKey = cfg?["api_key"]?.GetValue<string>();
-                    var au = cfg?["api_url"]?.GetValue<string>();
-                    if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER")) && !string.IsNullOrEmpty(au))
-                        server = au.EndsWith("/api/v2") ? au[..^7] : au;
-                }
-                catch (Exception ex) { Console.WriteLine($"license-os/config.json 读取失败：{ex.Message}"); }
-                break;
-            }
-        }
         var client = new LicenseClient();
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 LicenseGate.Enforce = Environment.GetEnvironmentVariable("EQUI_LICENSE_ENFORCE") == "1";
+                LicenseGate.Injected = LicenseOS.LicenseOSMeta.Injected;
+                // 密钥优先环境变量，其次授权页激活落库值（注入包用户在界面输入证书）
+                var key = Environment.GetEnvironmentVariable("EQUI_LICENSE_KEY");
+                var domain = Environment.GetEnvironmentVariable("EQUI_LICENSE_DOMAIN") ?? "";
+                if (string.IsNullOrEmpty(key))
+                {
+                    try
+                    {
+                        await using var conn = _db.App();
+                        var rows = await conn.Rows("SELECT license_key,domain FROM proj.license_state WHERE id=1");
+                        if (rows.Count > 0)
+                        {
+                            key = Pg.S(rows[0]["license_key"]);
+                            if (domain == "") domain = Pg.S(rows[0]["domain"]);
+                        }
+                    }
+                    catch { /* 表未就绪时按未激活处理 */ }
+                }
+                if (domain == "") domain = Environment.MachineName;
+                LicenseGate.Domain = domain;
                 if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(apiKey))
                 {
-                    LicenseGate.Current = new LicenseState("unconfigured", null, null, "未配置授权校验（EQUI_LICENSE_KEY 为空），社区模式运行");
+                    LicenseGate.Current = LicenseGate.Injected
+                        ? new LicenseState("inactive", null, null, "注入包未激活：请在授权页输入授权证书激活后使用")
+                        : new LicenseState("unconfigured", null, null, "未配置授权校验（EQUI_LICENSE_KEY 为空），社区模式运行");
                 }
                 else
                 {
@@ -96,6 +107,12 @@ public class LicenseService : BackgroundService
                     LicenseGate.Current = state;
                     if (state.Status == "valid") WriteCache(cachePath, DateTimeOffset.UtcNow);
                     Console.WriteLine($"授权状态：{state.Status} · {state.Message}");
+                }
+                // 防篡改：配置块自哈希上报 + 部署态文件清单核对（篡改即冻结并弹窗）
+                if (LicenseGate.Injected)
+                {
+                    await LicenseOS.IntegrityGuard.ReportAsync(domain, key ?? "");
+                    await RuntimeIntegrity.CheckAsync(server, apiKey, LicenseOS.LicenseOSMeta.Slug, domain, key ?? "");
                 }
             }
             catch (Exception ex) { Console.WriteLine($"授权服务异常：{ex.Message}"); }

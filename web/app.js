@@ -1010,4 +1010,60 @@ const TEMPLATES = {
 };
 function evTemplate() { $('evPayload').value = JSON.stringify(TEMPLATES[$('evType').value], null, 2); }
 
-if (TOKEN) boot();
+// ---------- 商业授权阶段界面（注入包生效；干净包社区模式零影响） ----------
+let LIC = null;
+function licOverlay() {
+  // 篡改/删除授权组件：全屏弹窗不可关闭，必须回平台拿完整包
+  if (document.getElementById('licTamper')) return;
+  const d = document.createElement('div');
+  d.id = 'licTamper';
+  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(20,0,0,.92);color:#fff;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px';
+  d.innerHTML = `<div style="max-width:560px"><h2 style="color:#ff8a80">检测到代码篡改或授权组件被删除</h2><p>本部署授权已冻结，弹窗无法关闭。请到数字刻栈平台重新下载完整安装包覆盖部署，或联系平台管理员。</p><p><a href="${esc(LIC?.renewUrl || 'https://sz.djkz.top')}" target="_blank" style="color:#8c9eff">前往数字刻栈获取完整包</a></p></div>`;
+  document.body.appendChild(d);
+  new MutationObserver(() => { if (!document.getElementById('licTamper')) document.body.appendChild(d); }).observe(document.body, { childList: true });
+}
+function licChip(p) {
+  const el = $('licChip'); if (!el) return;
+  if (!p.injected) { el.innerHTML = ''; return; }
+  const renew = p.renewUrl ? `<a href="${esc(p.renewUrl)}" target="_blank" style="color:inherit;text-decoration:underline">续费</a>` : '';
+  if (p.tampered) { el.innerHTML = '<span class="tag err">授权冻结</span>'; return; }
+  if (p.status === 'valid' && p.daysLeft !== null && p.daysLeft <= p.warningDays)
+    el.innerHTML = `<span class="tag warn">授权剩 ${p.daysLeft} 天 ${renew}</span>`;
+  else if (p.status === 'valid')
+    el.innerHTML = `<span class="tag ok">授权有效 · ${esc((p.expiresAt || '').slice(0, 10))} 到期</span>`;
+  else if (p.status === 'grace')
+    el.innerHTML = '<span class="tag warn">离线宽限中</span>';
+  else if (p.status === 'expired' || p.status === 'offline_expired')
+    el.innerHTML = `<span class="tag err">授权已过期 ${renew}</span>`;
+  else el.innerHTML = `<span class="tag err">授权无效 ${renew}</span>`;
+}
+function licActivateView(p) {
+  $('authView').style.display = 'none'; $('setupView').style.display = 'none'; $('mainView').style.display = 'none';
+  let v = document.getElementById('licView');
+  if (!v) { v = document.createElement('div'); v.id = 'licView'; v.className = 'panel narrow'; document.body.appendChild(v); }
+  v.style.display = 'block';
+  const expired = p.status === 'expired' || p.status === 'offline_expired';
+  v.innerHTML = `<h2>${expired ? '授权已过期' : '激活授权'}</h2>
+    <div class="msg ${expired ? 'err' : 'warn'}">${esc(p.message || '')}${expired ? ' 请续费后输入新证书。' : ' 本产品需输入授权证书激活后才会开放后台（含登录）。'}</div>
+    <p><input id="licKey" placeholder="授权证书密钥，如 SP03-XXXX-XXXX-XXXX" style="width:100%"></p>
+    <p><button onclick="licActivate()">激活授权</button>
+    ${p.renewUrl ? `<a href="${esc(p.renewUrl)}" target="_blank"><button class="ghost">${expired ? '去续费/购买' : '去购买/续费'}</button></a>` : ''}</p>
+    <div id="licMsg" class="msg"></div>`;
+}
+async function licActivate() {
+  try {
+    const r = await fetch('/api/license-activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: $('licKey').value.trim() }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || '激活失败');
+    location.reload();
+  } catch (e) { $('licMsg').className = 'msg err'; $('licMsg').textContent = e.message; }
+}
+async function licenseGate() {
+  try { LIC = await (await fetch('/api/license-public')).json(); } catch { return true; }
+  if (LIC.tampered) { licOverlay(); return false; }
+  licChip(LIC);
+  if (LIC.injected && LIC.uiLocked) { licActivateView(LIC); return false; }
+  setInterval(async () => { try { const p = await (await fetch('/api/license-public')).json(); LIC = p; if (p.tampered) licOverlay(); else licChip(p); } catch {} }, 300000);
+  return true;
+}
+(async () => { if (await licenseGate() && TOKEN) boot(); })();

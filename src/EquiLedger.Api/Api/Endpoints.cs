@@ -61,6 +61,7 @@ public static class Endpoints
 
         app.MapPost("/api/login", async (JsonObject body) =>
         {
+            if (LicenseGate.UiLocked) return Deny("授权未激活或已失效：请先在授权页输入授权证书激活");
             await using var conn = db.App();
             var rows = await conn.Rows("SELECT * FROM proj.accounts WHERE username=@u", ("u", body["username"]?.GetValue<string>() ?? ""));
             if (rows.Count == 0 || !Crypto.VerifyPassword(body["password"]?.GetValue<string>() ?? "", Pg.S(rows[0]["pwd_hash"])))
@@ -670,7 +671,60 @@ public static class Endpoints
             var c = await Auth(req, db);
             if (c is null) return Deny("未登录");
             var s = LicenseGate.Current;
-            return Results.Json(new { status = s.Status, enforce = LicenseGate.Enforce, expiresAt = s.ExpiresAt, lastOkAt = s.LastOkAt, message = s.Message });
+            return Results.Json(new { status = s.Status, enforce = LicenseGate.Enforce, expiresAt = s.ExpiresAt, lastOkAt = s.LastOkAt, message = s.Message, domain = LicenseGate.Domain, warningDays = LicenseOS.LicenseOSMeta.WarningDays, renewUrl = LicenseOS.LicenseOSMeta.RenewUrl, daysLeft = LicenseOS.LicenseOSMeta.DaysLeft(s.ExpiresAt) });
+        });
+
+        // ---------- 授权公开阶段（无需登录：未激活时整个后台含登录都不出现，只留激活页） ----------
+        app.MapGet("/api/license-public", async () =>
+        {
+            var s = LicenseGate.Current;
+            string? activatedAt = null; string? dbDomain = null;
+            try
+            {
+                await using var conn = db.App();
+                var rows = await conn.Rows("SELECT domain,activated_at FROM proj.license_state WHERE id=1");
+                if (rows.Count > 0) { dbDomain = Pg.S(rows[0]["domain"]); activatedAt = rows[0]["activated_at"] as DateTime? is { } t ? t.ToString("o") : null; }
+            }
+            catch { }
+            return Results.Json(new
+            {
+                injected = LicenseGate.Injected,
+                status = s.Status,
+                tampered = LicenseGate.TamperedLocal || s.Status == "tampered",
+                uiLocked = LicenseGate.UiLocked,
+                domain = dbDomain ?? LicenseGate.Domain,
+                activatedAt,
+                expiresAt = s.ExpiresAt,
+                warningDays = LicenseOS.LicenseOSMeta.WarningDays,
+                daysLeft = LicenseOS.LicenseOSMeta.DaysLeft(s.ExpiresAt),
+                renewUrl = LicenseOS.LicenseOSMeta.RenewUrl,
+                message = s.Message,
+            });
+        });
+
+        // ---------- 授权激活（无需登录：输入证书→平台激活+验权→落库→解锁后台） ----------
+        app.MapPost("/api/license-activate", async (HttpRequest req, JsonObject body) =>
+        {
+            var key = body["key"]?.GetValue<string>()?.Trim() ?? "";
+            if (key == "") return Results.Json(new { error = "请输入授权证书密钥" }, statusCode: 400);
+            var meta = LicenseOS.LicenseOSMeta.Parse();
+            var server = Environment.GetEnvironmentVariable("EQUI_LICENSE_SERVER");
+            if (string.IsNullOrEmpty(server)) { var au = meta["api_url"]?.GetValue<string>() ?? ""; server = au != "" ? (au.EndsWith("/api/v2") ? au[..^7] : au) : "https://sz.djkz.top"; }
+            var apiKey = Environment.GetEnvironmentVariable("EQUI_LICENSE_API_KEY") ?? (meta["api_key"]?.GetValue<string>() ?? "");
+            if (apiKey == "") return Results.Json(new { error = "本包未注入授权配置，无法激活" }, statusCode: 400);
+            var domain = req.Host.Host ?? "localhost";
+            var client = new LicenseClient();
+            var (st, exp) = await client.ActivateAsync(server, apiKey, key, domain);
+            if (st is not ("valid" or "active"))
+                return Results.Json(new { error = "激活失败：密钥无效或已被平台暂停" }, statusCode: 403);
+            var (cst, cexp) = await client.CheckAsync(server, apiKey, key, domain);
+            exp = cexp ?? exp;
+            await using var conn = db.App();
+            await conn.Exec(@"INSERT INTO proj.license_state(id,license_key,domain,activated_at,updated_at) VALUES(1,@k,@d,@now,@now)
+                ON CONFLICT (id) DO UPDATE SET license_key=@k,domain=@d,updated_at=@now", ("k", key), ("d", domain), ("now", DateTime.UtcNow));
+            LicenseGate.Domain = domain;
+            LicenseGate.Current = LicensePolicy.Evaluate(cst == "valid" ? "valid" : st, exp, DateTime.UtcNow, DateTimeOffset.UtcNow, 7);
+            return Results.Json(new { ok = true, status = LicenseGate.Current.Status, expiresAt = exp, domain });
         });
 
         // ---------- 银行代发批量文件（CSV，UTF-8 BOM，主流企业网银代发格式） ----------

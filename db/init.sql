@@ -580,3 +580,9 @@ CREATE TABLE IF NOT EXISTS proj.scan_logs (
 );
 GRANT SELECT, INSERT, UPDATE ON proj.devices, proj.scan_packets, proj.scan_reviews, proj.piece_records, proj.quality_records, proj.logistics_scans TO equi_app;
 GRANT SELECT, INSERT ON proj.scan_logs TO equi_app;
+-- 商业授权激活态（授权页输入证书后落库；不入事件链）
+CREATE TABLE IF NOT EXISTS proj.license_state (
+    id INT PRIMARY KEY DEFAULT 1, license_key TEXT NOT NULL DEFAULT '', domain TEXT NOT NULL DEFAULT '',
+    activated_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
+);
+GRANT SELECT, INSERT, UPDATE ON proj.license_state TO equi_app;
